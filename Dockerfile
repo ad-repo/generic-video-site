@@ -18,7 +18,12 @@ RUN pip install -r requirements.txt
 COPY app ./app
 COPY static ./static
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
 ENV VIDEO_BASE_DIR=/videos
 
-EXPOSE 1111
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "1111"]
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

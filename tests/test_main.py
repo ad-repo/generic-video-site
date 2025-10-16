@@ -27,8 +27,8 @@ class TestVideoSite:
         response = client.get("/api/library")
         assert response.status_code == 200
         data = response.json()
-        assert "videos" in data
-        assert isinstance(data["videos"], list)
+        assert "items" in data
+        assert isinstance(data["items"], list)
     
     def test_video_streaming(self):
         """Test video streaming endpoint."""
@@ -61,14 +61,14 @@ class TestVideoSite:
         response = client.get("/api/library?search=test")
         assert response.status_code == 200
         data = response.json()
-        assert "videos" in data
+        assert "items" in data
     
     def test_api_library_with_sort(self):
         """Test API library with sort parameter."""
         response = client.get("/api/library?sort=title")
         assert response.status_code == 200
         data = response.json()
-        assert "videos" in data
+        assert "items" in data
     
     def test_health_check(self):
         """Test health check endpoint."""
@@ -93,8 +93,8 @@ class TestVideoProcessing:
         data = response.json()
         
         # Check if videos are properly sorted
-        if data["videos"]:
-            titles = [video["title"] for video in data["videos"]]
+        if data["items"]:
+            titles = [video["title"] for video in data["items"]]
             # Basic check that we have titles
             assert all(isinstance(title, str) for title in titles)
 

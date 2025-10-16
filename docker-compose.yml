@@ -1,20 +1,22 @@
-version: "2"
+version: "3.8"
 services:
   video-site:
-    container_name: nas3-video-site
-    image: nas3/video-site:local
+    container_name: generic-video-site
+    image: generic-video-site:latest
     build:
       context: .
       dockerfile: Dockerfile
-    pull_policy: build
-    network_mode: host
+    ports:
+      - "8000:8000"
     environment:
-      PUID: "1024"
-      PGID: "101"
-      TZ: "US/Eastern"
-      VIDEO_BASE_DIR: "/app/video"
+      - VIDEOS_ROOT=/app/data
+      - VIDEO_BASE_DIR=/app/data
     restart: unless-stopped
     volumes:
-      - /volume1/dockerdata/video-site:/app/data:rw
-      - /volume1/docker/video-site/data:/app/video:ro
-    # No ports because host networking
+      - ./data:/app/data:ro
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
