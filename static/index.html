@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Vibe Video Site - SIDEBAR TEST</title>
+	<link rel="stylesheet" href="/static/styles.css?v=2.0" />
+</head>
+<body>
+	<header class="topbar">
+		<h1>generic-video-site</h1>
+		<div class="controls">
+			<button id="expandAll">Expand All</button>
+			<button id="collapseAll">Collapse All</button>
+		</div>
+	</header>
+
+	<div class="main-layout">
+		<aside id="courseSidebar" class="course-sidebar">
+			<div class="sidebar-header">
+				<h2>Courses</h2>
+				<button id="toggleSidebar" class="sidebar-toggle">☰</button>
+			</div>
+			<div id="courseList" class="course-list"></div>
+		</aside>
+		
+		<main id="library" class="library"></main>
+	</div>
+	
+	<!-- Floating sidebar toggle for when sidebar is collapsed -->
+	<button id="floatingToggle" class="floating-toggle hidden">☰</button>
+
+	<div id="playerModal" class="modal hidden">
+		<div class="modal-content">
+			<button id="closeModal" class="close">×</button>
+			<h2 id="playerTitle"></h2>
+			<video id="player" controls preload="metadata"></video>
+		</div>
+	</div>
+
+	<script src="/static/script.js?v=2.0"></script>
+</body>
+</html>

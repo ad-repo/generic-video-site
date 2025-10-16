@@ -1,0 +1,20 @@
+version: "2"
+services:
+  video-site:
+    container_name: nas3-video-site
+    image: nas3/video-site:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    pull_policy: build
+    network_mode: host
+    environment:
+      PUID: "1024"
+      PGID: "101"
+      TZ: "US/Eastern"
+      VIDEO_BASE_DIR: "/app/video"
+    restart: unless-stopped
+    volumes:
+      - /volume1/dockerdata/video-site:/app/data:rw
+      - /volume1/docker/video-site/data:/app/video:ro
+    # No ports because host networking
