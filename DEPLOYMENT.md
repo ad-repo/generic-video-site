@@ -15,7 +15,7 @@ If you prefer to run commands manually:
 sudo docker-compose -f docker-compose.yml down
 
 # Remove old image
-sudo docker rmi nas3/video-site:local
+sudo docker rmi nas3/generic-video-site:local
 
 # Clean up
 sudo docker system prune -f
@@ -46,10 +46,10 @@ sudo docker-compose logs
 ### Files not updating
 ```bash
 # Check if files are in container
-sudo docker exec nas3-video-site ls -la /app/static/
+sudo docker exec generic-video-site ls -la /app/static/
 
 # Check HTML content
-sudo docker exec nas3-video-site cat /app/static/index.html | head -10
+sudo docker exec generic-video-site cat /app/static/index.html | head -10
 ```
 
 ### Force complete rebuild
@@ -64,4 +64,4 @@ sudo docker system prune -a
 - **Stop service**: `sudo docker-compose down`
 - **Restart**: `sudo docker-compose restart`
 - **Check status**: `sudo docker-compose ps`
-- **Shell access**: `sudo docker exec -it nas3-video-site /bin/bash`
+- **Shell access**: `sudo docker exec -it generic-video-site /bin/bash`

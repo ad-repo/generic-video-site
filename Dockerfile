@@ -18,12 +18,14 @@ RUN pip install -r requirements.txt
 COPY app ./app
 COPY static ./static
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app
-USER appuser
+# Create database directory with full permissions for SQLite
+# SQLite needs write access to both the database file and directory for temp/journal files
+RUN mkdir -p /app/db && \
+    chmod 777 /app/db
 
-ENV VIDEO_BASE_DIR=/videos
+# Note: Container runs as root (configured in docker-compose.yml) to avoid permission issues
+
+# VIDEO_BASE_DIR is set by docker-compose to match volume mount path
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

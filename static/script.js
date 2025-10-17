@@ -8,17 +8,25 @@
 	const playerTitle = document.getElementById('playerTitle');
 	const courseSidebar = document.getElementById('courseSidebar');
 	const courseList = document.getElementById('courseList');
-	const toggleSidebar = document.getElementById('toggleSidebar');
-	const floatingToggle = document.getElementById('floatingToggle');
+	const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+	const syncStatus = document.getElementById('syncStatus');
+	const syncModal = document.getElementById('syncModal');
+	const closeSyncModal = document.getElementById('closeSyncModal');
+	const createSyncBtn = document.getElementById('createSyncBtn');
+	const joinSyncBtn = document.getElementById('joinSyncBtn');
+	const syncCodeInput = document.getElementById('syncCodeInput');
+	const syncStatusDisplay = document.getElementById('syncStatusDisplay');
+	const syncResult = document.getElementById('syncResult');
 	
 
 	let libraryData = [];
 	let filtered = [];
+	let selectedCourse = null; // Track currently selected/filtered course
 	
 	// Debug: Check if elements are found
 	console.log('Course sidebar element:', courseSidebar);
 	console.log('Course list element:', courseList);
-	console.log('Toggle sidebar element:', toggleSidebar);
+	console.log('Mobile menu button:', mobileMenuBtn);
 
 	function getProgressKey(item){
 		return `progress:${item.path}`;
@@ -33,12 +41,12 @@ function getRatingKey(courseName){
 }
 
 function getRating(courseName){
-	const rating = localStorage.getItem(getRatingKey(courseName));
+	const rating = window.storageManager.getItem(getRatingKey(courseName));
 	return rating ? parseInt(rating) : 0;
 }
 
-function setRating(courseName, rating){
-	localStorage.setItem(getRatingKey(courseName), rating.toString());
+async function setRating(courseName, rating){
+	await window.storageManager.setItem(getRatingKey(courseName), rating.toString());
 }
 
 function getVideoRatingKey(videoPath){
@@ -46,30 +54,281 @@ function getVideoRatingKey(videoPath){
 }
 
 function getVideoRating(videoPath){
-	const rating = localStorage.getItem(getVideoRatingKey(videoPath));
+	const rating = window.storageManager.getItem(getVideoRatingKey(videoPath));
 	return rating ? parseInt(rating) : 0;
 }
 
-function setVideoRating(videoPath, rating){
-	localStorage.setItem(getVideoRatingKey(videoPath), rating.toString());
+async function setVideoRating(videoPath, rating){
+	await window.storageManager.setItem(getVideoRatingKey(videoPath), rating.toString());
 }
 
-	function saveProgress(item){
-		localStorage.setItem(getProgressKey(item), String(player.currentTime || 0));
+	async function saveProgress(item){
+		await window.storageManager.setItem(getProgressKey(item), String(player.currentTime || 0));
 	}
 
 	function loadProgress(item){
-		const v = Number(localStorage.getItem(getProgressKey(item)) || 0);
+		const v = Number(window.storageManager.getItem(getProgressKey(item)) || 0);
 		if (!Number.isFinite(v)) return 0;
 		return v;
 	}
 
-	function markAsPlayed(item){
-		localStorage.setItem(getPlayedKey(item), 'true');
+	async function markAsPlayed(item){
+		await window.storageManager.setItem(getPlayedKey(item), 'true');
 	}
 
 	function isPlayed(item){
-		return localStorage.getItem(getPlayedKey(item)) === 'true';
+		return window.storageManager.getItem(getPlayedKey(item)) === 'true';
+	}
+
+	// Update sync status indicator
+	async function updateSyncStatus() {
+		if (!syncStatus) return;
+		
+		const status = window.storageManager.getSyncStatus();
+		const icon = syncStatus.querySelector('.sync-icon');
+		const text = syncStatus.querySelector('.sync-text');
+		
+		syncStatus.className = 'sync-status';
+		
+		// Check if user is in a sync group
+		let syncGroupStatus = null;
+		try {
+			const response = await fetch('/api/sync/status');
+			if (response.ok) {
+				syncGroupStatus = await response.json();
+			}
+		} catch (error) {
+			console.log('Could not fetch sync status:', error.message);
+		}
+		
+		if (!status.online) {
+			syncStatus.classList.add('offline');
+			icon.textContent = '📴';
+			text.textContent = 'Offline';
+		} else if (syncGroupStatus && syncGroupStatus.synced) {
+			icon.textContent = '🔗';
+			text.textContent = `Synced (${syncGroupStatus.device_count})`;
+		} else if (status.pendingChanges > 0) {
+			syncStatus.classList.add('syncing');
+			icon.textContent = '🔄';
+			text.textContent = 'Syncing';
+		} else {
+			icon.textContent = '☁️';
+			text.textContent = 'Local';
+		}
+		
+		const tooltip = syncGroupStatus && syncGroupStatus.synced 
+			? `Synced with ${syncGroupStatus.device_count} devices - Click to manage`
+			: 'Click to sync with other devices';
+		syncStatus.title = tooltip;
+	}
+
+	// Sync Group Management
+	async function openSyncModal() {
+		syncModal.classList.remove('hidden');
+		await updateSyncStatusDisplay();
+	}
+
+	async function closeSyncModalFunc() {
+		syncModal.classList.add('hidden');
+		syncResult.classList.add('hidden');
+		syncCodeInput.value = '';
+	}
+
+	async function updateSyncStatusDisplay() {
+		if (!syncStatusDisplay) return;
+
+		try {
+			const response = await fetch('/api/sync/status');
+			if (!response.ok) {
+				syncStatusDisplay.innerHTML = '<p style="color: #f44336;">Sync service unavailable</p>';
+				return;
+			}
+
+			const status = await response.json();
+			
+			if (status.synced) {
+				const expiresAt = new Date(status.expires_at);
+				const hoursLeft = Math.max(0, Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60)));
+				
+				syncStatusDisplay.innerHTML = `
+					<div class="sync-code-display">
+						<div>Your sync code:</div>
+						<div class="sync-code-large">${status.sync_code}</div>
+						<div style="font-size: 12px; color: var(--muted);">Expires in ${hoursLeft} hours</div>
+					</div>
+					<div class="device-list">
+						<div style="font-weight: 600; margin-bottom: 8px;">Connected Devices (${status.device_count}):</div>
+						${status.devices.map(device => `
+							<div class="device-item ${device.is_current ? 'current' : ''}">
+								<span class="device-name">${device.name}${device.is_current ? ' (This device)' : ''}</span>
+								<span class="device-time">${new Date(device.last_sync).toLocaleDateString()}</span>
+							</div>
+						`).join('')}
+					</div>
+					<div style="display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap;">
+						<button onclick="leaveSyncGroup()" style="background: rgba(244, 67, 54, 0.1); color: #f44336; border: 1px solid rgba(244, 67, 54, 0.3); padding: 8px 16px; border-radius: 6px; cursor: pointer;">Leave Sync Group</button>
+						<button onclick="resetAllData()" style="background: rgba(156, 39, 176, 0.1); color: #9c27b0; border: 1px solid rgba(156, 39, 176, 0.3); padding: 8px 16px; border-radius: 6px; cursor: pointer;">Reset All Data</button>
+					</div>
+				`;
+			} else {
+				syncStatusDisplay.innerHTML = `
+					<p style="color: var(--muted); margin: 16px 0;">
+						This device is not synced with any other devices. Create a sync code to share with your other devices, or enter a code from another device to join an existing sync group.
+					</p>
+					<div style="margin-top: 16px;">
+						<button onclick="resetAllData()" style="background: rgba(156, 39, 176, 0.1); color: #9c27b0; border: 1px solid rgba(156, 39, 176, 0.3); padding: 8px 16px; border-radius: 6px; cursor: pointer;">Reset All Data</button>
+					</div>
+				`;
+			}
+		} catch (error) {
+			syncStatusDisplay.innerHTML = '<p style="color: #f44336;">Failed to load sync status</p>';
+		}
+	}
+
+	async function createSyncGroup() {
+		showSyncResult('Creating sync code...', 'info');
+		
+		try {
+			const response = await fetch('/api/sync/create', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({description: 'Device Sync'})
+			});
+			
+			const result = await response.json();
+			
+			if (result.success) {
+				showSyncResult(`✅ Sync code created: ${result.sync_code}`, 'success');
+				await updateSyncStatusDisplay();
+				await updateSyncStatus();
+			} else {
+				showSyncResult('❌ Failed to create sync code', 'error');
+			}
+		} catch (error) {
+			showSyncResult('❌ Network error creating sync code', 'error');
+		}
+	}
+
+	async function joinSyncGroup() {
+		const code = syncCodeInput.value.trim().toUpperCase();
+		
+		if (!code || code.length !== 6) {
+			showSyncResult('❌ Please enter a valid 6-character code', 'error');
+			return;
+		}
+		
+		showSyncResult('Joining sync group...', 'info');
+		
+		try {
+			const response = await fetch('/api/sync/join', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({sync_code: code})
+			});
+			
+			const result = await response.json();
+			
+			if (result.success) {
+				showSyncResult(`✅ ${result.message}`, 'success');
+				syncCodeInput.value = '';
+				await updateSyncStatusDisplay();
+				await updateSyncStatus();
+				
+				// Reload preferences to get synced data
+				setTimeout(() => {
+					window.location.reload();
+				}, 2000);
+			} else {
+				showSyncResult(`❌ ${result.message}`, 'error');
+			}
+		} catch (error) {
+			showSyncResult('❌ Network error joining sync group', 'error');
+		}
+	}
+
+	async function leaveSyncGroup() {
+		if (!confirm('Are you sure you want to leave this sync group? Your data will remain on this device but won\'t sync with other devices anymore.')) {
+			return;
+		}
+		
+		try {
+			const response = await fetch('/api/sync/leave', {method: 'DELETE'});
+			const result = await response.json();
+			
+			if (result.success) {
+				showSyncResult('✅ Left sync group successfully', 'success');
+				await updateSyncStatusDisplay();
+				await updateSyncStatus();
+			} else {
+				showSyncResult('❌ Failed to leave sync group', 'error');
+			}
+		} catch (error) {
+			showSyncResult('❌ Network error leaving sync group', 'error');
+		}
+	}
+	
+	async function resetAllData() {
+		if (!confirm('⚠️ Are you sure you want to reset ALL data?\n\nThis will permanently clear:\n• All ratings and reviews\n• All played/watched status\n• All video progress\n• Sync group membership\n\nThis action cannot be undone!')) {
+			return;
+		}
+		
+		try {
+			showSyncResult('Resetting all data...', 'info');
+			
+			// Clear all localStorage data
+			const keys = [];
+			for (let i = 0; i < localStorage.length; i++) {
+				keys.push(localStorage.key(i));
+			}
+			
+			// Remove all video site related data
+			keys.forEach(key => {
+				if (key.startsWith('progress:') || 
+					key.startsWith('played:') || 
+					key.startsWith('rating:') || 
+					key.startsWith('videoRating:')) {
+					localStorage.removeItem(key);
+				}
+			});
+			
+			// Reset server-side data if available
+			try {
+				const response = await fetch('/api/reset', { method: 'POST' });
+				if (response.ok) {
+					showSyncResult('✅ All data reset successfully', 'success');
+				} else {
+					showSyncResult('✅ Local data reset (server sync unavailable)', 'success');
+				}
+			} catch (error) {
+				showSyncResult('✅ Local data reset (server sync unavailable)', 'success');
+			}
+			
+			// Reload to refresh the interface
+			setTimeout(() => {
+				window.location.reload();
+			}, 2000);
+			
+		} catch (error) {
+			showSyncResult('❌ Failed to reset data', 'error');
+		}
+	}
+	
+	// Make functions available globally for the onclick handlers
+	window.leaveSyncGroup = leaveSyncGroup;
+	window.resetAllData = resetAllData;
+
+	function showSyncResult(message, type) {
+		syncResult.textContent = message;
+		syncResult.className = `sync-result ${type}`;
+		syncResult.classList.remove('hidden');
+		
+		// Hide after 5 seconds for success messages
+		if (type === 'success') {
+			setTimeout(() => {
+				syncResult.classList.add('hidden');
+			}, 5000);
+		}
 	}
 
 	function getResourceIcon(fileType) {
@@ -125,7 +384,7 @@ function setVideoRating(videoPath, rating){
 				</div>
 				<div class="course-nav-rating" data-course-name="${courseName}">
 					${Array.from({length: 5}, (_, i) => 
-						`<span class="star ${i < getRating(courseName) ? 'filled' : ''}" data-rating="${i + 1}">★</span>`
+						`<span class="star ${i < getRating(courseName) ? 'filled' : ''}" data-rating="${i + 1}">🔥</span>`
 					).join('')}
 				</div>
 				<div class="course-nav-progress">
@@ -135,21 +394,21 @@ function setVideoRating(videoPath, rating){
 			
 			courseItem.addEventListener('click', (e) => {
 				e.preventDefault();
-				scrollToCourse(courseName);
+				scrollToCourseEnhanced(courseName);
 			});
 			
 			// Add star rating event listeners
 			courseItem.querySelectorAll('.star').forEach(star => {
-				star.addEventListener('click', (e) => {
+				star.addEventListener('click', async (e) => {
 					e.stopPropagation();
 					const rating = parseInt(star.dataset.rating);
 					const currentRating = getRating(courseName);
 					
 					// If clicking the same rating as current, clear it
 					if (rating === currentRating) {
-						setRating(courseName, 0);
+						await setRating(courseName, 0);
 					} else {
-						setRating(courseName, rating);
+						await setRating(courseName, rating);
 					}
 					render(); // Refresh to update all ratings
 				});
@@ -157,6 +416,9 @@ function setVideoRating(videoPath, rating){
 			
 			courseList.appendChild(courseItem);
 		});
+		
+		// Update sidebar selection after rendering
+		updateSidebarSelection();
 	}
 
 	function scrollToCourse(courseName) {
@@ -177,6 +439,48 @@ function setVideoRating(videoPath, rating){
 			if (courseHeader && courseContent) {
 				courseHeader.classList.remove('collapsed');
 				courseContent.classList.remove('collapsed');
+			}
+		}
+	}
+
+	// Filter courses to show only selected course
+	function filterCourseData(courseName) {
+		if (!courseName || !libraryData) return libraryData;
+		return libraryData.filter(item => {
+			const pathParts = (item.dir_path || '').split('/');
+			const itemCourseName = pathParts[0] || 'Other';
+			return itemCourseName === courseName;
+		});
+	}
+	
+	// Show only one course
+	function showOnlyCourse(courseName) {
+		selectedCourse = courseName;
+		filtered = filterCourseData(courseName);
+		render();
+		updateSidebarSelection();
+	}
+	
+	// Show all courses (reset filter)
+	function showAllCourses() {
+		selectedCourse = null;
+		filtered = libraryData;
+		render();
+		updateSidebarSelection();
+	}
+	
+	// Update sidebar to show which course is selected
+	function updateSidebarSelection() {
+		// Remove active class from all course nav items
+		document.querySelectorAll('.course-nav-item').forEach(item => {
+			item.classList.remove('active');
+		});
+		
+		// Add active class to selected course
+		if (selectedCourse) {
+			const activeItem = document.querySelector(`[data-course-name="${selectedCourse}"]`);
+			if (activeItem) {
+				activeItem.classList.add('active');
 			}
 		}
 	}
@@ -238,7 +542,7 @@ function setVideoRating(videoPath, rating){
 						<span class="progress-indicator">${playedVideos}/${totalVideos} videos</span>
 						<div class="course-rating" data-course-name="${courseName}">
 							${Array.from({length: 5}, (_, i) => 
-								`<span class="star ${i < getRating(courseName) ? 'filled' : ''}" data-rating="${i + 1}">★</span>`
+								`<span class="star ${i < getRating(courseName) ? 'filled' : ''}" data-rating="${i + 1}">🔥</span>`
 							).join('')}
 						</div>
 						<span class="progress-bar">
@@ -344,21 +648,21 @@ function setVideoRating(videoPath, rating){
 					videoRating.className = 'video-rating';
 					videoRating.dataset.videoPath = item.path;
 					videoRating.innerHTML = Array.from({length: 5}, (_, i) => 
-						`<span class="star ${i < getVideoRating(item.path) ? 'filled' : ''}" data-rating="${i + 1}">★</span>`
+						`<span class="star ${i < getVideoRating(item.path) ? 'filled' : ''}" data-rating="${i + 1}">🔥</span>`
 					).join('');
 					
 					// Add star rating event listeners
 					videoRating.querySelectorAll('.star').forEach(star => {
-						star.addEventListener('click', (e) => {
+						star.addEventListener('click', async (e) => {
 							e.stopPropagation();
 							const rating = parseInt(star.dataset.rating);
 							const currentRating = getVideoRating(item.path);
 							
 							// If clicking the same rating as current, clear it
 							if (rating === currentRating) {
-								setVideoRating(item.path, 0);
+								await setVideoRating(item.path, 0);
 							} else {
-								setVideoRating(item.path, rating);
+								await setVideoRating(item.path, rating);
 							}
 							render(); // Refresh to update all ratings
 						});
@@ -405,16 +709,16 @@ function setVideoRating(videoPath, rating){
 			
 			// Add star rating event listeners for main content
 			courseHeader.querySelectorAll('.star').forEach(star => {
-				star.addEventListener('click', (e) => {
+				star.addEventListener('click', async (e) => {
 					e.stopPropagation();
 					const rating = parseInt(star.dataset.rating);
 					const currentRating = getRating(courseName);
 					
 					// If clicking the same rating as current, clear it
 					if (rating === currentRating) {
-						setRating(courseName, 0);
+						await setRating(courseName, 0);
 					} else {
-						setRating(courseName, rating);
+						await setRating(courseName, rating);
 					}
 					render(); // Refresh to update all ratings
 				});
@@ -433,6 +737,20 @@ function setVideoRating(videoPath, rating){
 		libraryData = data.items || [];
 		filtered = libraryData;
 		render();
+		
+		// Re-render sidebar after library data is loaded to ensure proper course groups
+		setTimeout(() => {
+			const courseGroups = {};
+			libraryData.forEach(item => {
+				const pathParts = (item.dir_path || '').split('/');
+				const courseName = pathParts[0] || 'Other';
+				if (!courseGroups[courseName]) {
+					courseGroups[courseName] = {};
+				}
+			});
+			renderSidebar(courseGroups);
+			updateSidebarSelection(); // Make sure sidebar selection state is correct
+		}, 100);
 	}
 
 	function openPlayer(item){
@@ -461,17 +779,17 @@ function setVideoRating(videoPath, rating){
 		});
 
 		// save progress periodically
-		const onTime = () => {
-			saveProgress(item);
+		const onTime = async () => {
+			await saveProgress(item);
 			// Mark as played when 90% of video is watched
 			if (player.duration && player.currentTime / player.duration >= 0.9) {
-				markAsPlayed(item);
+				await markAsPlayed(item);
 			}
 		};
 		player.addEventListener('timeupdate', onTime);
-		const onEnded = () => {
-			saveProgress(item);
-			markAsPlayed(item);
+		const onEnded = async () => {
+			await saveProgress(item);
+			await markAsPlayed(item);
 			// Re-render to update visual indicators
 			render();
 		};
@@ -518,21 +836,245 @@ function setVideoRating(videoPath, rating){
 		});
 	});
 
-	// Sidebar toggle functionality
+	// Mobile detection
+	function isMobile() {
+		return window.innerWidth <= 768;
+	}
+
+	// Sidebar toggle functionality with mobile and desktop support
 	function toggleSidebarFunction() {
+		// Reset course filter to show all courses when hamburger menu is clicked
+		if (selectedCourse) {
+			showAllCourses();
+		}
+		
 		courseSidebar.classList.toggle('collapsed');
 		
-		// Show/hide floating toggle based on sidebar state
-		if (courseSidebar.classList.contains('collapsed')) {
-			floatingToggle.classList.remove('hidden');
+		if (isMobile()) {
+			// On mobile, manage body scroll and overlay behavior
+			if (courseSidebar.classList.contains('collapsed')) {
+				document.body.style.overflow = '';
+			} else {
+				document.body.style.overflow = 'hidden';
+			}
 		} else {
-			floatingToggle.classList.add('hidden');
+			// Desktop behavior - manage floating toggle visibility
+			const floatingToggle = document.getElementById('floatingToggle');
+			if (floatingToggle) {
+				if (courseSidebar.classList.contains('collapsed')) {
+					floatingToggle.classList.remove('hidden');
+				} else {
+					floatingToggle.classList.add('hidden');
+				}
+			}
 		}
 	}
+
+	// Close sidebar function
+	function closeSidebar() {
+		courseSidebar.classList.add('collapsed');
+		document.body.style.overflow = '';
+		
+		// Desktop behavior - show floating toggle if on desktop
+		if (!isMobile()) {
+			const floatingToggle = document.getElementById('floatingToggle');
+			if (floatingToggle) {
+				floatingToggle.classList.remove('hidden');
+			}
+		}
+	}
+
+	// Mobile: Close sidebar when clicking outside
+	function handleOutsideClick(event) {
+		if (isMobile() && !courseSidebar.classList.contains('collapsed')) {
+			// Check if click is outside sidebar and not on the mobile menu button
+			if (!courseSidebar.contains(event.target) && !mobileMenuBtn.contains(event.target)) {
+				closeSidebar();
+			}
+		}
+	}
+
+	// Mobile: Handle escape key
+	function handleEscapeKey(event) {
+		if (event.key === 'Escape' && isMobile() && !courseSidebar.classList.contains('collapsed')) {
+			closeSidebar();
+		}
+	}
+
+	// Touch gesture support for mobile sidebar
+	let startX = 0;
+	let currentX = 0;
+	let isDragging = false;
+
+	function handleTouchStart(event) {
+		if (isMobile()) {
+			startX = event.touches[0].clientX;
+			isDragging = true;
+		}
+	}
+
+	function handleTouchMove(event) {
+		if (!isDragging || !isMobile()) return;
+		
+		currentX = event.touches[0].clientX;
+		const diffX = currentX - startX;
+
+		// If sidebar is open and swiping left, allow closing gesture
+		if (!courseSidebar.classList.contains('collapsed') && diffX < -50) {
+			event.preventDefault();
+		}
+	}
+
+	function handleTouchEnd(event) {
+		if (!isDragging || !isMobile()) {
+			isDragging = false;
+			return;
+		}
+
+		const diffX = currentX - startX;
+		
+		// Close sidebar if swiped left more than 100px
+		if (!courseSidebar.classList.contains('collapsed') && diffX < -100) {
+			closeSidebar();
+		}
+		
+		isDragging = false;
+	}
+
+	// Enhanced course selection - now filters to show only selected course
+	function scrollToCourseEnhanced(courseName) {
+		// Show only the selected course
+		showOnlyCourse(courseName);
+		
+		// Close sidebar on mobile after selecting course
+		if (isMobile()) {
+			setTimeout(() => {
+				closeSidebar();
+			}, 300);
+		}
+	}
+
+	// Window resize handler
+	function handleResize() {
+		const floatingToggle = document.getElementById('floatingToggle');
+		
+		if (isMobile()) {
+			// Switching to mobile view
+			if (!courseSidebar.classList.contains('collapsed')) {
+				document.body.style.overflow = 'hidden';
+			}
+			// Hide desktop floating toggle on mobile
+			if (floatingToggle) {
+				floatingToggle.classList.add('hidden');
+			}
+		} else {
+			// Switching to desktop view - reset mobile styles
+			document.body.style.overflow = '';
+			// Manage desktop floating toggle visibility
+			if (floatingToggle) {
+				if (courseSidebar.classList.contains('collapsed')) {
+					floatingToggle.classList.remove('hidden');
+				} else {
+					floatingToggle.classList.add('hidden');
+				}
+			}
+		}
+	}
+
+	// Event listeners
+	// Note: toggleSidebar button in sidebar is now hidden - only hamburger menu is used
+	if (mobileMenuBtn) {
+		mobileMenuBtn.addEventListener('click', toggleSidebarFunction);
+	}
 	
-	toggleSidebar.addEventListener('click', toggleSidebarFunction);
-	floatingToggle.addEventListener('click', toggleSidebarFunction);
+	// Desktop floating toggle (if it exists)
+	const floatingToggle = document.getElementById('floatingToggle');
+	if (floatingToggle) {
+		floatingToggle.addEventListener('click', toggleSidebarFunction);
+	}
+	
+	// Sync modal event listeners
+	if (syncStatus) {
+		syncStatus.addEventListener('click', openSyncModal);
+	}
+	
+	if (closeSyncModal) {
+		closeSyncModal.addEventListener('click', closeSyncModalFunc);
+	}
+	
+	if (createSyncBtn) {
+		createSyncBtn.addEventListener('click', createSyncGroup);
+	}
+	
+	if (joinSyncBtn) {
+		joinSyncBtn.addEventListener('click', joinSyncGroup);
+	}
+	
+	if (syncCodeInput) {
+		syncCodeInput.addEventListener('keypress', (e) => {
+			if (e.key === 'Enter') {
+				joinSyncGroup();
+			}
+		});
+		
+		// Auto-uppercase input
+		syncCodeInput.addEventListener('input', (e) => {
+			e.target.value = e.target.value.toUpperCase();
+		});
+	}
+	
+	// Close sync modal when clicking outside
+	if (syncModal) {
+		syncModal.addEventListener('click', (e) => {
+			if (e.target === syncModal) {
+				closeSyncModalFunc();
+			}
+		});
+	}
+	
+	document.addEventListener('click', handleOutsideClick);
+	document.addEventListener('keydown', handleEscapeKey);
+	document.addEventListener('touchstart', handleTouchStart, { passive: false });
+	document.addEventListener('touchmove', handleTouchMove, { passive: false });
+	document.addEventListener('touchend', handleTouchEnd);
+	window.addEventListener('resize', handleResize);
+
+	// Initialize state based on device type
+	if (isMobile()) {
+		courseSidebar.classList.add('collapsed');
+		document.body.style.overflow = '';
+		// Hide desktop floating toggle on mobile
+		const floatingToggle = document.getElementById('floatingToggle');
+		if (floatingToggle) {
+			floatingToggle.classList.add('hidden');
+		}
+	} else {
+		// Desktop initialization - manage floating toggle visibility
+		const floatingToggle = document.getElementById('floatingToggle');
+		if (floatingToggle) {
+			if (courseSidebar.classList.contains('collapsed')) {
+				floatingToggle.classList.remove('hidden');
+			} else {
+				floatingToggle.classList.add('hidden');
+			}
+		}
+	}
 
 
-	fetchLibrary();
+	// Initialize storage manager and then fetch library
+	window.storageManager.initialize().then(() => {
+		fetchLibrary();
+		updateSyncStatus();
+		
+		// Update sync status periodically
+		setInterval(updateSyncStatus, 2000);
+		
+		// Update sync status when online/offline
+		window.addEventListener('online', updateSyncStatus);
+		window.addEventListener('offline', updateSyncStatus);
+	}).catch(() => {
+		console.warn('Storage manager initialization failed, using localStorage fallback');
+		fetchLibrary();
+		updateSyncStatus();
+	});
 })();
