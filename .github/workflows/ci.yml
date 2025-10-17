@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -71,16 +76,84 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Run Trivy vulnerability scanner
+    - name: Run Trivy filesystem scan
       uses: aquasecurity/trivy-action@master
       with:
         scan-type: 'fs'
         scan-ref: '.'
         format: 'sarif'
-        output: 'trivy-results.sarif'
+        output: 'trivy-fs-results.sarif'
     
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
+    - name: Build Docker image for security scan
+      run: docker build -t generic-video-site:security .
+    
+    - name: Run Trivy container image scan
+      uses: aquasecurity/trivy-action@master
       with:
-        sarif_file: 'trivy-results.sarif'
+        image-ref: 'generic-video-site:security'
+        format: 'sarif'
+        output: 'trivy-image-results.sarif'
+    
+    - name: Python dependency security audit
+      run: |
+        pip install pip-audit
+        pip-audit --format=sarif --output=pip-audit-results.sarif --requirement=requirements.txt || echo "Pip audit completed with issues or warnings"
+      continue-on-error: true
+    
+    - name: Upload filesystem scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      continue-on-error: true
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+        category: 'filesystem'
+    
+    - name: Upload container scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      continue-on-error: true
+      with:
+        sarif_file: 'trivy-image-results.sarif'
+        category: 'container'
+    
+    - name: Upload Python dependency audit results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      continue-on-error: true
+      with:
+        sarif_file: 'pip-audit-results.sarif'
+        category: 'python-deps'
+    
+    - name: Display scan results (fallback)
+      if: always()
+      run: |
+        echo "🔍 Security scan completed. Results:"
+        echo ""
+        echo "📁 Filesystem Scan Results:"
+        if [ -f "trivy-fs-results.sarif" ]; then
+          echo "✅ Filesystem SARIF generated"
+          fs_issues=$(cat trivy-fs-results.sarif | grep -o '"level":"[^"]*"' | wc -l || echo "0")
+          echo "📊 Issues found: $fs_issues"
+        else
+          echo "❌ No filesystem SARIF generated"
+        fi
+        echo ""
+        echo "🐳 Container Image Scan Results:"
+        if [ -f "trivy-image-results.sarif" ]; then
+          echo "✅ Container SARIF generated"
+          img_issues=$(cat trivy-image-results.sarif | grep -o '"level":"[^"]*"' | wc -l || echo "0")
+          echo "📊 Issues found: $img_issues"
+        else
+          echo "❌ No container SARIF generated"
+        fi
+        echo ""
+        echo "🐍 Python Dependencies Audit Results:"
+        if [ -f "pip-audit-results.sarif" ]; then
+          echo "✅ Python audit SARIF generated"
+          pip_issues=$(cat pip-audit-results.sarif | grep -o '"level":"[^"]*"' | wc -l || echo "0")
+          echo "📊 Issues found: $pip_issues"
+        else
+          echo "❌ No Python audit SARIF generated"
+        fi
+        echo ""
+        echo "🔗 Full results available in GitHub Security tab"
