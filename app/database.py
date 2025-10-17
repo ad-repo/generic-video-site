@@ -1,0 +1,100 @@
+import os
+import hashlib
+from sqlalchemy import create_engine, Column, String, Float, DateTime, Text, Integer, ForeignKey, text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+from typing import Optional
+
+# Database setup
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./db/user_preferences.db")
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(String, primary_key=True)
+    user_agent = Column(Text)
+    ip_address = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), index=True)
+    preference_key = Column(String, index=True)  # e.g., "progress:video1.mp4", "rating:Course1"
+    preference_value = Column(Text)  # Store as string, parse as needed
+    preference_type = Column(String)  # "progress", "played", "course_rating", "video_rating"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+def create_tables():
+    """Create all database tables"""
+    try:
+        # Ensure the database directory exists
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            print(f"Created database directory: {db_dir}")
+        
+        # Check if we can write to the database directory
+        if db_dir and not os.access(db_dir, os.W_OK):
+            print(f"⚠️ Warning: No write permission to database directory: {db_dir}")
+            
+        Base.metadata.create_all(bind=engine)
+        print(f"Database tables created at: {db_path}")
+        
+        # Test database connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        print("✅ Database connection test successful")
+        
+    except Exception as e:
+        print(f"❌ Database initialization error: {e}")
+        print(f"Database URL: {DATABASE_URL}")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"Database path: {db_path}")
+        if db_dir:
+            print(f"Database directory exists: {os.path.exists(db_dir)}")
+            print(f"Database directory writable: {os.access(db_dir, os.W_OK) if os.path.exists(db_dir) else 'N/A'}")
+        raise
+
+def get_db():
+    """Dependency to get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def generate_user_id(ip_address: str, user_agent: str) -> str:
+    """Generate a consistent user ID based on IP and User-Agent"""
+    # Create a hash that's consistent but not easily reversible
+    combined = f"{ip_address}:{user_agent}"
+    return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+def get_or_create_user(db, ip_address: str, user_agent: str) -> User:
+    """Get existing user or create new one"""
+    user_id = generate_user_id(ip_address, user_agent)
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        user = User(
+            id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        # Update last seen
+        user.last_seen = datetime.utcnow()
+        db.commit()
+    
+    return user

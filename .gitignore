@@ -2,6 +2,14 @@
 data/
 /Volumes/docker/video-site/data/
 
+# Database files - user preferences and runtime data
+db/
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+user_preferences.db
+
 # Python
 __pycache__/
 *.py[cod]
@@ -47,6 +55,7 @@ venv.bak/
 .Trashes
 ehthumbs.db
 Thumbs.db
+@eaDir
 
 # Docker
 .dockerignore
@@ -80,3 +89,6 @@ coverage.xml
 # Temporary files
 *.tmp
 *.temp
+
+# SMB/Network file sharing temporary files
+.smbdelete*

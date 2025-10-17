@@ -2,13 +2,18 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>Vibe Video Site - SIDEBAR TEST</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+	<title>Generic Video Site</title>
 	<link rel="stylesheet" href="/static/styles.css?v=2.0" />
 </head>
 <body>
 	<header class="topbar">
+		<button id="mobileMenuBtn" class="mobile-menu-btn">☰</button>
 		<h1>generic-video-site</h1>
+		<div class="sync-status" id="syncStatus" title="Click to manage device sync">
+			<span class="sync-icon">☁️</span>
+			<span class="sync-text">Synced</span>
+		</div>
 		<div class="controls">
 			<button id="expandAll">Expand All</button>
 			<button id="collapseAll">Collapse All</button>
@@ -19,7 +24,6 @@
 		<aside id="courseSidebar" class="course-sidebar">
 			<div class="sidebar-header">
 				<h2>Courses</h2>
-				<button id="toggleSidebar" class="sidebar-toggle">☰</button>
 			</div>
 			<div id="courseList" class="course-list"></div>
 		</aside>
@@ -30,6 +34,39 @@
 	<!-- Floating sidebar toggle for when sidebar is collapsed -->
 	<button id="floatingToggle" class="floating-toggle hidden">☰</button>
 
+	<!-- Sync Modal -->
+	<div id="syncModal" class="modal hidden">
+		<div class="modal-content">
+			<button id="closeSyncModal" class="close">×</button>
+			<h2>Device Sync</h2>
+			<div id="syncContent">
+				<div class="sync-status-display">
+					<p class="sync-description">Sync your progress and ratings across devices</p>
+					<div id="syncStatusDisplay"></div>
+				</div>
+				
+				<div class="sync-actions">
+					<div class="sync-section">
+						<h3>Create Sync Code</h3>
+						<p>Generate a code to sync this device with others</p>
+						<button id="createSyncBtn" class="sync-btn primary">Create Sync Code</button>
+					</div>
+					
+					<div class="sync-section">
+						<h3>Join with Code</h3>
+						<p>Enter a code from another device to sync</p>
+						<div class="sync-input-group">
+							<input type="text" id="syncCodeInput" placeholder="Enter 6-character code" maxlength="6">
+							<button id="joinSyncBtn" class="sync-btn secondary">Join</button>
+						</div>
+					</div>
+				</div>
+				
+				<div id="syncResult" class="sync-result hidden"></div>
+			</div>
+		</div>
+	</div>
+
 	<div id="playerModal" class="modal hidden">
 		<div class="modal-content">
 			<button id="closeModal" class="close">×</button>
@@ -38,6 +75,7 @@
 		</div>
 	</div>
 
-	<script src="/static/script.js?v=2.0"></script>
+	<script src="/static/storage.js?v=3.0"></script>
+	<script src="/static/script.js?v=3.0"></script>
 </body>
 </html>

@@ -83,7 +83,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=app --cov-report=html
 
 # Test Docker build
-docker build -t generic-video-site .
+docker build -t nas3/generic-video-site:local .
 ```
 
 ### 4. Commit Changes

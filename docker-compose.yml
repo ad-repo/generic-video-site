@@ -1,19 +1,22 @@
 version: "3.8"
 services:
-  video-site:
+  generic-video-site:
     container_name: generic-video-site
-    image: generic-video-site:latest
+    image: nas3/generic-video-site:local
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
-      - VIDEOS_ROOT=/app/data
       - VIDEO_BASE_DIR=/app/data
+      - DATABASE_URL=sqlite:///./db/user_preferences.db
     restart: unless-stopped
     volumes:
       - ./data:/app/data:ro
+      - ./db:/app/db:rw
+    # Run as root to avoid SQLite permission issues in deployment
+    user: "0:0"
     # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

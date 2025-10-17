@@ -6,9 +6,14 @@ echo "🚀 Deploying with cache clearing..."
 echo "Stopping containers..."
 sudo docker-compose -f docker-compose.yml down
 
+# Ensure database directory exists with proper permissions for SQLite
+echo "Setting up database directory..."
+mkdir -p ./db
+chmod 777 ./db
+
 # Remove old image
 echo "Removing old image..."
-sudo docker rmi nas3/video-site:local 2>/dev/null || echo "No old image to remove"
+sudo docker rmi nas3/generic-video-site:local 2>/dev/null || echo "No old image to remove"
 
 # Clean up everything
 echo "Cleaning up Docker system..."

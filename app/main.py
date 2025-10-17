@@ -1,16 +1,56 @@
 import os
 import mimetypes
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from datetime import datetime
+
+from .database import create_tables, get_db, get_or_create_user, User, UserPreference
+from .sync_system import (SyncGroup, DeviceSync, create_sync_group, join_sync_group, 
+                         get_sync_group_users, get_device_info)
 
 BASE_DIR_ENV = "VIDEO_BASE_DIR"
-VIDEOS_ROOT = os.environ.get(BASE_DIR_ENV) or "/Volumes/docker/video-site/data"
+VIDEOS_ROOT = os.environ.get(BASE_DIR_ENV) or "/Volumes/docker/generic-video-site/data"
 
 app = FastAPI(title="Generic Video Site")
+
+# Initialize database tables on startup
+@app.on_event("startup")
+async def startup_event():
+    try:
+        create_tables()
+        print("✅ Database initialization successful")
+    except Exception as e:
+        print(f"❌ Database initialization failed: {e}")
+        print("⚠️ The app will continue running but preferences won't persist across devices")
+        # Don't fail startup - app can still work with localStorage only
+
+# Pydantic models for API
+class PreferenceRequest(BaseModel):
+    key: str
+    value: str
+    type: str  # "progress", "played", "course_rating", "video_rating"
+
+class PreferenceResponse(BaseModel):
+    key: str
+    value: str
+    type: str
+    updated_at: str
+
+class SyncGroupRequest(BaseModel):
+    description: str = None
+
+class SyncGroupResponse(BaseModel):
+    sync_code: str
+    expires_in_hours: int
+    
+class JoinSyncRequest(BaseModel):
+    sync_code: str
 
 @app.get("/health")
 async def health_check():
@@ -214,9 +254,316 @@ async def serve_resources(path: str):
 	return FileResponse(str(file_path), media_type=mime)
 
 
+# User Preferences API
+def get_client_info(request: Request) -> tuple[str, str]:
+	"""Extract client IP and User-Agent for user identification"""
+	# Get real IP (handles proxy headers)
+	ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+	if not ip:
+		ip = request.headers.get("x-real-ip", "")
+	if not ip:
+		ip = request.client.host if request.client else "unknown"
+	
+	user_agent = request.headers.get("user-agent", "unknown")
+	return ip, user_agent
+
+@app.get("/api/preferences")
+async def get_preferences(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Get all user preferences (includes synced devices)"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Note: cleanup_expired_sync_groups removed for permanent sync groups
+		
+		# Get all user IDs in the same sync group
+		synced_user_ids = get_sync_group_users(db, user.id)
+		
+		# Get preferences from all synced users, keeping the most recent value for each key
+		all_preferences = db.query(UserPreference).filter(
+			UserPreference.user_id.in_(synced_user_ids)
+		).all()
+		
+		# Merge preferences, keeping the most recently updated value for each key
+		result = {}
+		for pref in all_preferences:
+			key = pref.preference_key
+			if key not in result or pref.updated_at > datetime.fromisoformat(result[key]["updated_at"].replace("Z", "+00:00")):
+				result[key] = {
+					"value": pref.preference_value,
+					"type": pref.preference_type,
+					"updated_at": pref.updated_at.isoformat(),
+					"synced_from": len(synced_user_ids) > 1  # Indicates if this came from sync
+				}
+		
+		return result
+	except Exception as e:
+		print(f"Database error in get_preferences: {e}")
+		raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+
+@app.post("/api/preferences")
+async def save_preference(request: Request, preference: PreferenceRequest, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Save or update a user preference"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Check if preference already exists
+		existing = db.query(UserPreference).filter(
+			UserPreference.user_id == user.id,
+			UserPreference.preference_key == preference.key
+		).first()
+		
+		if existing:
+			# Update existing preference
+			existing.preference_value = preference.value
+			existing.preference_type = preference.type
+			existing.updated_at = datetime.utcnow()
+		else:
+			# Create new preference
+			new_pref = UserPreference(
+				user_id=user.id,
+				preference_key=preference.key,
+				preference_value=preference.value,
+				preference_type=preference.type
+			)
+			db.add(new_pref)
+		
+		db.commit()
+		return {"success": True, "key": preference.key}
+	except Exception as e:
+		print(f"Database error in save_preference: {e}")
+		raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+
+@app.delete("/api/preferences/{preference_key}")
+async def delete_preference(preference_key: str, request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Delete a user preference"""
+	ip, user_agent = get_client_info(request)
+	user = get_or_create_user(db, ip, user_agent)
+	
+	# Find and delete the preference
+	deleted_count = db.query(UserPreference).filter(
+		UserPreference.user_id == user.id,
+		UserPreference.preference_key == preference_key
+	).delete()
+	
+	db.commit()
+	return {"success": True, "deleted": deleted_count > 0}
+
+@app.get("/api/preferences/sync")
+async def sync_preferences(request: Request, preferences: str = Query(...), db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Sync multiple preferences from localStorage to server"""
+	import json
+	
+	ip, user_agent = get_client_info(request)
+	user = get_or_create_user(db, ip, user_agent)
+	
+	try:
+		prefs_data = json.loads(preferences)
+		synced_count = 0
+		
+		for key, value in prefs_data.items():
+			# Determine preference type from key
+			pref_type = "unknown"
+			if key.startswith("progress:"):
+				pref_type = "progress"
+			elif key.startswith("played:"):
+				pref_type = "played"
+			elif key.startswith("rating:"):
+				pref_type = "course_rating"
+			elif key.startswith("videoRating:"):
+				pref_type = "video_rating"
+			
+			# Check if preference exists
+			existing = db.query(UserPreference).filter(
+				UserPreference.user_id == user.id,
+				UserPreference.preference_key == key
+			).first()
+			
+			if existing:
+				existing.preference_value = str(value)
+				existing.preference_type = pref_type
+				existing.updated_at = datetime.utcnow()
+			else:
+				new_pref = UserPreference(
+					user_id=user.id,
+					preference_key=key,
+					preference_value=str(value),
+					preference_type=pref_type
+				)
+				db.add(new_pref)
+			
+			synced_count += 1
+		
+		db.commit()
+		return {"success": True, "synced_count": synced_count}
+		
+	except json.JSONDecodeError:
+		raise HTTPException(status_code=400, detail="Invalid JSON in preferences parameter")
+
+# Sync Group API
+@app.post("/api/sync/create")
+async def create_sync_code(request: Request, sync_request: SyncGroupRequest, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Create a new sync group and return sync code"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		sync_code = create_sync_group(db, user.id, sync_request.description)
+		
+		return {
+			"success": True,
+			"sync_code": sync_code,
+			"expires_in_hours": 24,
+			"message": f"Share this code: {sync_code}"
+		}
+	except Exception as e:
+		print(f"Error creating sync group: {e}")
+		raise HTTPException(status_code=500, detail="Failed to create sync group")
+
+@app.post("/api/sync/join")
+async def join_sync_code(request: Request, join_request: JoinSyncRequest, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Join an existing sync group using sync code"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		device_name = get_device_info(user_agent)
+		
+		success = join_sync_group(db, join_request.sync_code, user.id, device_name)
+		
+		if success:
+			return {
+				"success": True,
+				"message": f"Successfully joined sync group with code: {join_request.sync_code.upper()}"
+			}
+		else:
+			return {
+				"success": False,
+				"message": "Invalid or expired sync code"
+			}
+	except Exception as e:
+		print(f"Error joining sync group: {e}")
+		raise HTTPException(status_code=500, detail="Failed to join sync group")
+
+@app.get("/api/sync/status")
+async def get_sync_status(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Get current sync status and connected devices"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Note: cleanup_expired_sync_groups removed for permanent sync groups
+		
+		# Check if user is in a sync group
+		device_sync = db.query(DeviceSync).filter(DeviceSync.device_user_id == user.id).first()
+		
+		if not device_sync:
+			return {
+				"synced": False,
+				"message": "Not synced with any devices"
+			}
+		
+		# Get all devices in the same sync group
+		all_devices = db.query(DeviceSync).filter(
+			DeviceSync.sync_code == device_sync.sync_code
+		).all()
+		
+		# Get sync group info
+		sync_group = db.query(SyncGroup).filter(
+			SyncGroup.sync_code == device_sync.sync_code
+		).first()
+		
+		return {
+			"synced": True,
+			"sync_code": device_sync.sync_code,
+			"device_count": len(all_devices),
+			"devices": [
+				{
+					"name": device.device_name,
+					"joined_at": device.joined_at.isoformat(),
+					"last_sync": device.last_sync.isoformat(),
+					"is_current": device.device_user_id == user.id
+				} for device in all_devices
+			],
+			"expires_at": sync_group.expires_at.isoformat() if sync_group and sync_group.expires_at else None
+		}
+		
+	except Exception as e:
+		print(f"Error getting sync status: {e}")
+		raise HTTPException(status_code=500, detail="Failed to get sync status")
+
+@app.post("/api/sync/leave")
+async def leave_sync_group(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Leave current sync group"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Remove user from any sync groups
+		deleted_count = db.query(DeviceSync).filter(DeviceSync.device_user_id == user.id).delete()
+		db.commit()
+		
+		if deleted_count > 0:
+			return {"success": True, "message": "Successfully left sync group"}
+		else:
+			return {"success": False, "message": "Not in any sync group"}
+			
+	except Exception as e:
+		db.rollback()
+		print(f"Error leaving sync group: {e}")
+		raise HTTPException(status_code=500, detail="Failed to leave sync group")
+
+@app.post("/api/reset")
+async def reset_all_data(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Reset all user data including preferences and sync group membership"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Remove user from any sync groups
+		db.query(DeviceSync).filter(DeviceSync.device_user_id == user.id).delete()
+		
+		# Clear all user preferences
+		db.query(UserPreference).filter(UserPreference.user_id == user.id).delete()
+		
+		# Optionally remove the user record itself
+		db.delete(user)
+		
+		db.commit()
+		
+		return {"success": True, "message": "All data reset successfully"}
+		
+	except Exception as e:
+		db.rollback()
+		print(f"Error resetting data: {e}")
+		raise HTTPException(status_code=500, detail="Failed to reset data")
+
+@app.delete("/api/sync/leave")
+async def leave_sync_group(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+	"""Leave current sync group"""
+	try:
+		ip, user_agent = get_client_info(request)
+		user = get_or_create_user(db, ip, user_agent)
+		
+		# Remove user from any sync groups
+		deleted_count = db.query(DeviceSync).filter(
+			DeviceSync.device_user_id == user.id
+		).delete()
+		
+		db.commit()
+		
+		return {
+			"success": True,
+			"message": "Left sync group successfully" if deleted_count > 0 else "Not in any sync group"
+		}
+		
+	except Exception as e:
+		print(f"Error leaving sync group: {e}")
+		raise HTTPException(status_code=500, detail="Failed to leave sync group")
+
 @app.get("/")
 async def index():
 	index_file = static_dir / "index.html"
 	if not index_file.exists():
-		return HTMLResponse("<h1>Vibe Video Site</h1><p>Static assets missing.</p>")
+		return HTMLResponse("<h1>Generic Video Site</h1><p>Static assets missing.</p>")
 	return HTMLResponse(index_file.read_text(encoding="utf-8"))
