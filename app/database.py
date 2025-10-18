@@ -74,8 +74,25 @@ def get_db():
 
 def generate_user_id(ip_address: str, user_agent: str) -> str:
     """Generate a consistent user ID based on IP and User-Agent"""
+    # Normalize ALL Docker container IPs to prevent new user IDs on each deployment
+    normalized_ip = ip_address
+    
+    # Check if this looks like a Docker container IP (single client connecting to container)
+    # Docker can assign various private IP ranges: 172.x.x.x, 192.168.x.x, 10.x.x.x
+    if (ip_address.startswith('172.') or 
+        ip_address.startswith('192.168.') or 
+        ip_address.startswith('10.')) and len(ip_address.split('.')) == 4:
+        
+        # Check if it's a Docker gateway IP (usually ends in .1)
+        if ip_address.endswith('.1'):
+            # This is likely a Docker container request - normalize to consistent IP
+            normalized_ip = "172.docker.internal"
+        else:
+            # This might be a real local network IP - keep as is
+            normalized_ip = ip_address
+    
     # Create a hash that's consistent but not easily reversible
-    combined = f"{ip_address}:{user_agent}"
+    combined = f"{normalized_ip}:{user_agent}"
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 def get_or_create_user(db, ip_address: str, user_agent: str) -> User:

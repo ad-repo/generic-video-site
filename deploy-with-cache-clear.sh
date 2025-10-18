@@ -6,10 +6,11 @@ echo "🚀 Deploying with cache clearing..."
 echo "Stopping containers..."
 sudo docker-compose -f docker-compose.yml down
 
-# Ensure database directory exists with proper permissions for SQLite
-echo "Setting up database directory..."
-mkdir -p ./db
-chmod 777 ./db
+# Ensure persistent database directory exists with proper permissions for SQLite
+echo "Setting up persistent database directory..."
+mkdir -p /volume1/dockerdata/generic-video-site/db
+chmod 777 /volume1/dockerdata/generic-video-site/db
+echo "✅ Database will persist in /volume1/dockerdata/generic-video-site/db/"
 
 # Remove old image
 echo "Removing old image..."
