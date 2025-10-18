@@ -38,7 +38,7 @@ jobs:
     
     - name: Run tests
       run: |
-        # Run core tests that should always pass
+        # Run core tests that should always pass (streamlined for speed)
         pytest tests/test_database.py tests/test_sync_system.py tests/test_main.py tests/test_docker.py -v --cov=app --cov-report=xml
         
         # Optional: Run our comprehensive test runner (allows some failures)
