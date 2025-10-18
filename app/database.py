@@ -1,6 +1,6 @@
 import os
 import hashlib
-from sqlalchemy import create_engine, Column, String, Float, DateTime, Text, Integer, ForeignKey, text
+from sqlalchemy import create_engine, Column, String, Float, DateTime, Text, Integer, ForeignKey, text, UniqueConstraint, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -31,6 +31,25 @@ class UserPreference(Base):
     preference_type = Column(String)  # "progress", "played", "course_rating", "video_rating"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class VideoSummary(Base):
+    __tablename__ = "video_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    video_path = Column(Text, nullable=False, index=True)
+    status = Column(String, default="pending", index=True)  # pending | processing | completed | failed | no_audio
+    summary = Column(Text)
+    transcript = Column(Text)
+    model_used = Column(String)
+    audio_duration_seconds = Column(Float)
+    processing_time_seconds = Column(Float)
+    error_message = Column(Text)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('video_path', name='uq_video_summaries_video_path'),
+        Index('ix_video_summaries_status_generated', 'status', 'generated_at'),
+    )
 
 def create_tables():
     """Create all database tables"""

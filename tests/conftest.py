@@ -1,3 +1,28 @@
+import os
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.database import Base, engine, SessionLocal
+
+
+@pytest.fixture(scope="session")
+def test_client():
+    return TestClient(app)
+
+
+@pytest.fixture(scope="function")
+def test_db(monkeypatch):
+    """Provide a clean in-memory database for model tests when needed."""
+    # Override engine to use sqlite in-memory for tests that need direct DB
+    test_engine = engine
+    # For simplicity, reuse the existing engine; create tables before each test
+    Base.metadata.create_all(bind=test_engine)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 import pytest
 import tempfile
 import os

@@ -6,6 +6,12 @@
 	const closeModal = document.getElementById('closeModal');
 	const player = document.getElementById('player');
 	const playerTitle = document.getElementById('playerTitle');
+	const summarizeBtn = document.getElementById('summarizeBtn');
+	const summarySection = document.getElementById('summarySection');
+	const summaryStatus = document.getElementById('summaryStatus');
+	const summaryContent = document.getElementById('summaryContent');
+	const modalPlayBtn = document.getElementById('modalPlayBtn');
+	const modalVideoRating = document.getElementById('modalVideoRating');
 	const courseSidebar = document.getElementById('courseSidebar');
 	const courseList = document.getElementById('courseList');
 	const mobileMenuBtn = document.getElementById('mobileMenuBtn');
@@ -770,12 +776,71 @@ async function setVideoRating(videoPath, rating){
 		const resumeAt = loadProgress(item);
 		modal.classList.remove('hidden');
 		
+		// Reset summary UI
+		summarySection.classList.add('hidden');
+		summaryStatus.textContent = '';
+		summaryContent.innerHTML = '';
+
+		// Wire modal play button
+		if (modalPlayBtn) {
+			modalPlayBtn.textContent = '▶ Play';
+			modalPlayBtn.classList.remove('pause');
+			modalPlayBtn.onclick = () => {
+				if (player.paused) { player.play().catch(()=>{}); }
+				else { player.pause(); }
+			};
+			player.addEventListener('play', () => { modalPlayBtn.textContent = '⏸ Pause'; modalPlayBtn.classList.add('pause'); });
+			player.addEventListener('pause', () => { modalPlayBtn.textContent = '▶ Play'; modalPlayBtn.classList.remove('pause'); });
+		}
+
+		// Set modal rating for this video
+		if (modalVideoRating) {
+			modalVideoRating.dataset.videoPath = item.path;
+			modalVideoRating.innerHTML = Array.from({length: 5}, (_, i) => 
+				`<span class="star ${i < getVideoRating(item.path) ? 'filled' : ''}" data-rating="${i + 1}">🔥</span>`
+			).join('');
+			modalVideoRating.querySelectorAll('.star').forEach(star => {
+				star.addEventListener('click', async (e) => {
+					const rating = parseInt(star.dataset.rating);
+					const currentRating = getVideoRating(item.path);
+					if (rating === currentRating) { await setVideoRating(item.path, 0); }
+					else { await setVideoRating(item.path, rating); }
+					modalVideoRating.innerHTML = Array.from({length: 5}, (_, i) => 
+						`<span class="star ${i < getVideoRating(item.path) ? 'filled' : ''}" data-rating="${i + 1}">🔥</span>`
+					).join('');
+				});
+			});
+		}
+
+		// Wire summarize button
+		if (summarizeBtn) {
+			summarizeBtn.classList.remove('processing');
+			summarizeBtn.textContent = '✨ Generate Summary';
+			summarizeBtn.onclick = () => startSummaryFlow(item);
+		}
+
+		// Auto-load existing summary if present
+		(async () => {
+			try {
+				const existing = await fetch(`/api/summary/get?video_path=${encodeURIComponent(item.path)}`);
+				if (existing.ok) {
+					const data = await existing.json();
+					if (data.found && data.status === 'completed' && data.summary) {
+						summarySection.classList.remove('hidden');
+						renderSummary(data.summary);
+						summaryStatus.textContent = 'Summary ready';
+						if (summarizeBtn) summarizeBtn.textContent = '🔄 Re-summarize';
+					}
+				}
+			} catch (_) {}
+		})();
+
 		player.addEventListener('loadedmetadata', function onMeta(){
 			player.removeEventListener('loadedmetadata', onMeta);
 			if (resumeAt > 0 && resumeAt < (player.duration || Infinity)) {
 				player.currentTime = resumeAt;
 			}
-			player.play().catch(()=>{});
+			// Do not autoplay
 		});
 
 		// save progress periodically
@@ -804,6 +869,213 @@ async function setVideoRating(videoPath, rating){
 		};
 		closeModal.onclick = () => { cleanup(); modal.classList.add('hidden'); };
 		modal.onclick = (e) => { if (e.target === modal) { cleanup(); modal.classList.add('hidden'); } };
+	}
+
+	async function startSummaryFlow(item){
+		try {
+			summarySection.classList.remove('hidden');
+			summaryStatus.textContent = 'Checking for existing summary...';
+			summaryContent.innerHTML = '';
+
+			// Try to load existing
+			const existing = await fetch(`/api/summary/get?video_path=${encodeURIComponent(item.path)}`);
+			if (existing.ok) {
+				const data = await existing.json();
+				if (data.found && data.status === 'completed' && data.summary) {
+					renderSummary(data.summary);
+					summaryStatus.textContent = 'Summary loaded';
+					summarizeBtn.textContent = '🔄 Regenerate Summary';
+				}
+			}
+
+			// Start new summary
+			summarizeBtn.classList.add('processing');
+			summarizeBtn.textContent = '⏳ Summarizing 0%';
+			summaryStatus.textContent = 'Starting...';
+			const res = await fetch('/api/summary/start', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ video_path: item.path, force: true })
+			});
+			if (!res.ok) {
+				const err = await res.text();
+				throw new Error(err || 'Failed to start summary');
+			}
+			const { task_id } = await res.json();
+			summaryStatus.textContent = 'Queued...';
+			await pollSummaryStatus(task_id, item);
+		} catch (e) {
+			summaryStatus.textContent = 'Error: ' + (e.message || 'Failed');
+			summarizeBtn.classList.remove('processing');
+			summarizeBtn.textContent = '✨ AI Summary';
+		}
+	}
+
+	async function pollSummaryStatus(taskId, item){
+		let done = false;
+		while (!done) {
+			await new Promise(r => setTimeout(r, 1500));
+			const r = await fetch(`/api/summary/status/${encodeURIComponent(taskId)}`);
+			if (!r.ok) break;
+			const s = await r.json();
+			summaryStatus.textContent = `${s.progress || s.status} ${s.progress_percent ? '('+s.progress_percent+'%)' : ''}`;
+			if (typeof s.progress_percent === 'number') {
+				summarizeBtn.textContent = `⏳ Summarizing ${s.progress_percent}%`;
+			}
+			if (s.status === 'completed') {
+				done = true;
+				const result = s.result || {};
+				if (result.success && result.summary) {
+					renderSummary(result.summary);
+				}
+				summarizeBtn.classList.remove('processing');
+				summarizeBtn.textContent = '🔄 Re-summarize';
+			}
+			if (s.status === 'failed') {
+				done = true;
+				summaryStatus.textContent = 'Failed: ' + (s.error || 'Unknown error');
+				summarizeBtn.classList.remove('processing');
+				summarizeBtn.textContent = '✨ AI Summary';
+			}
+		}
+	}
+
+	function renderSummary(raw){
+		// Parse content into sections
+		const html = formatSummaryContent(raw);
+		summaryContent.innerHTML = html;
+	}
+
+	function formatSummaryContent(raw){
+		const normalized = normalizeSummaryText(raw);
+		// Split lines and merge orphan numeric step lines like "1" followed by content
+		const rawLines = normalized.split('\n').map(l => l.trim()).filter(Boolean);
+		const lines = [];
+		for (let i = 0; i < rawLines.length; i++) {
+			const ln = rawLines[i];
+			if (/^\d+$/.test(ln) && i + 1 < rawLines.length) {
+				lines.push(`${ln}) ${rawLines[i+1]}`);
+				i++; // skip the next line (already merged)
+			} else {
+				lines.push(ln);
+			}
+		}
+		let html = '';
+		let inKeys = false, inDetails = false;
+		const keyPoints = [];
+		const detailSections = [];
+		let currentSection = null;
+
+		const canonize = (s) => s.replace(/\*/g, '').replace(/\s*:+\s*$/, '').trim().toUpperCase();
+		const isMainKeyHeader = (s) => canonize(s) === 'KEY POINTS';
+		const isMainDetailHeader = (s) => canonize(s) === 'DETAILED SUMMARY';
+		const isSubHeader = (s) => {
+			const plain = s.replace(/^\*+|\*+$/g, '').trim();
+			return /^[A-Z0-9 ,()'\-\/]+:?$/.test(plain) && /[A-Z]/.test(plain) && plain.length <= 160 && plain.endsWith(':');
+		};
+
+		for (let rawLine of lines) {
+			let line = rawLine.replace(/^(?:[•\-–—]|➜)\s*/, '').replace(/^["“”]+/, '').trim();
+			if (isMainKeyHeader(line)) { inKeys = true; inDetails = false; continue; }
+			if (isMainDetailHeader(line)) { inKeys = false; inDetails = true; if (!currentSection) currentSection = { title: 'Overview', points: [], steps: [] }; continue; }
+			if (inDetails && isSubHeader(line)) {
+				if (currentSection && (currentSection.points.length || currentSection.steps.length)) detailSections.push(currentSection);
+				const title = line.replace(/^\*+|\*+$/g, '').replace(/:$/, '').trim();
+				currentSection = { title, points: [], steps: [] };
+				continue;
+			}
+			if (inKeys) {
+				if (line) keyPoints.push(line);
+				continue;
+			}
+			if (inDetails) {
+				if (!currentSection) currentSection = { title: 'Overview', points: [], steps: [] };
+				const m = line.match(/^(\d+)[\)\.]+\s*(.*)$/);
+				if (m) currentSection.steps.push({ n: parseInt(m[1],10), text: m[2] || '' });
+				else if (line) currentSection.points.push(line);
+			}
+		}
+		if (currentSection && (currentSection.points.length || currentSection.steps.length)) detailSections.push(currentSection);
+
+		if (keyPoints.length) {
+			html += '<div class="summary-section-title">✨ KEY POINTS</div>';
+			html += '<ul class="key-points-list">' + keyPoints.map(p => `<li class="key-point">✨ ${renderInline(p)}</li>`).join('') + '</ul>';
+		}
+		if (detailSections.length) {
+			html += '<div class="summary-section-title">🧩 DETAILED SUMMARY</div>';
+			detailSections.forEach(sec => {
+				html += `<div class="subsection-title">${formatSubsectionTitle(sec.title)}</div>`;
+				if (sec.points.length) {
+					html += '<ul class="detailed-summary-list">' + sec.points.map(p => `<li class="detailed-point">🔹 ${renderInline(p)}</li>`).join('') + '</ul>';
+				}
+				if (sec.steps.length) {
+					const sorted = sec.steps.sort((a,b)=>a.n-b.n);
+					html += '<ol class="steps-list">' + sorted.map(s => `<li><span class="step-num">${s.n}</span><span>${renderInline(s.text)}</span></li>`).join('') + '</ol>';
+				}
+			});
+		}
+		if (!html) {
+			const bullets = normalized.split(/(?:^|\n)\s*[•\-–—\*]\s+/).map(s => s.trim()).filter(Boolean);
+			if (bullets.length > 1) {
+				html = '<div class="summary-section-title">SUMMARY</div>' + '<ul class="detailed-summary-list">' + bullets.map(p => `<li class="detailed-point">${renderInline(p)}</li>`).join('') + '</ul>';
+			} else {
+				html = `<div class="summary-section-title">SUMMARY</div><div>${renderInline(raw)}</div>`;
+			}
+		}
+		return html;
+	}
+
+	function normalizeSummaryText(raw){
+		if (!raw) return '';
+		let text = String(raw).replace(/\r/g, '');
+		// Remove a leading SUMMARY label if present
+		text = text.replace(/^\s*\**\s*SUMMARY\s*\**:?-?\s*/i, '');
+		// Convert inline bullets to real line breaks first (handles headings prefixed by bullets)
+		text = text.replace(/\s*[•\-–—]\s+/g, '\n• ');
+		// Normalize section markers to their own lines (allow optional leading bullet)
+		text = text.replace(/(?:^|\n)\s*(?:[•\-–—]\s*)?\*{0,2}\s*KEY\s+POINTS\s*\*{0,2}:?\s*(?:\*{0,2}\s*)?/gi, '\n**KEY POINTS:**\n');
+		text = text.replace(/(?:^|\n)\s*(?:[•\-–—]\s*)?\*{0,2}\s*DETAILED\s+SUMMARY\s*\*{0,2}:?\s*(?:\*{0,2}\s*)?/gi, '\n**DETAILED SUMMARY:**\n');
+		// Also fix inline occurrences mid-line
+		text = text.replace(/\s+\*{0,2}\s*KEY\s+POINTS\s*\*{0,2}:?\s*(?:\*{0,2}\s*)?/gi, '\n**KEY POINTS:**\n');
+		text = text.replace(/\s+\*{0,2}\s*DETAILED\s+SUMMARY\s*\*{0,2}:?\s*(?:\*{0,2}\s*)?/gi, '\n**DETAILED SUMMARY:**\n');
+		// Common subheaders – put on their own lines
+		const subs = [
+			'KEY CONCEPTS, METHODOLOGIES, AND TECHNICAL DETAILS',
+			'TOOLS, FRAMEWORKS, OR TECHNOLOGIES REFERENCED',
+			'PREREQUISITES OR BACKGROUND KNOWLEDGE DISCUSSED',
+			'PRACTICAL APPLICATIONS AND REAL-WORLD USE CASES',
+			'STEP-BY-STEP PROCESSES OR WORKFLOWS MENTIONED'
+		];
+		subs.forEach(s => {
+			const re = new RegExp(`(?:^|\\n)\\s*(?:[•\\-–—]\\s*)?\\*{0,2}\\s*${s.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&')}\\s*\\*{0,2}:?\\s*(?:\\*{0,2}\\s*)?`, 'gi');
+			text = text.replace(re, `\n*${s}:**\n`);
+			// Also handle inline mid-line occurrences
+			const mid = new RegExp(`\\s+\\*{0,2}\\s*${s.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&')}\\s*\\*{0,2}:?\\s*(?:\\*{0,2}\\s*)?`, 'gi');
+			text = text.replace(mid, `\n*${s}:**\n`);
+		});
+		// Collapse multiple newlines
+		text = text.replace(/\n{2,}/g, '\n');
+		return text.trim();
+	}
+
+	function escapeHtml(str){
+		return str.replace(/[&<>"]|'/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+	}
+
+	function renderInline(text){
+		// Escape HTML, then convert **bold** to <strong>
+		const escaped = escapeHtml(text);
+		return escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+	}
+
+	function formatSubsectionTitle(title){
+		const t = title.toUpperCase();
+		if (t.startsWith('KEY CONCEPTS')) return `📚 ${escapeHtml(title)}`;
+		if (t.startsWith('TOOLS')) return `🛠️ ${escapeHtml(title)}`;
+		if (t.startsWith('PREREQUISITES')) return `🧠 ${escapeHtml(title)}`;
+		if (t.startsWith('PRACTICAL APPLICATIONS')) return `🚀 ${escapeHtml(title)}`;
+		if (t.startsWith('STEP-BY-STEP')) return `🧭 ${escapeHtml(title)}`;
+		return `📌 ${escapeHtml(title)}`;
 	}
 
 	// keyboard shortcuts
