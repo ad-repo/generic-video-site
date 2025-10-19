@@ -8,7 +8,14 @@ from typing import Optional
 
 # Database setup
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./db/user_preferences.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+# Increase pool to avoid QueuePool timeouts under polling; enable pre-ping
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+    pool_size=int(os.environ.get("DB_POOL_SIZE", "20")),
+    max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", "40")),
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
