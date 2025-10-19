@@ -51,6 +51,22 @@ class VideoSummary(Base):
         Index('ix_video_summaries_status_generated', 'status', 'generated_at'),
     )
 
+class VideoSummaryVersion(Base):
+    __tablename__ = "video_summary_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    video_path = Column(Text, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    summary = Column(Text)
+    transcript = Column(Text)
+    model_used = Column(String)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('video_path', 'version', name='uq_video_summary_versions_path_ver'),
+        Index('ix_video_summary_versions_path_time', 'video_path', 'generated_at'),
+    )
+
 def create_tables():
     """Create all database tables"""
     try:

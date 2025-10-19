@@ -35,10 +35,11 @@ until curl -sf http://localhost:11434/api/tags >/dev/null; do
 done
 
 # Pre-pull summarization models (idempotent)
-echo "Pulling Ollama model llama3.2:latest (7B) if not present..."
-docker-compose exec -T ollama ollama pull llama3.2:latest || true
-echo "Pulling Ollama model llama3.1:8b if not present..."
+echo "Pulling baseline Ollama models if not present (trimmed + fastest)..."
+docker-compose exec -T ollama ollama pull llama3.2:1b || true
 docker-compose exec -T ollama ollama pull llama3.1:8b || true
+docker-compose exec -T ollama ollama pull llama3.2:3b || true
+docker-compose exec -T ollama ollama pull qwen2.5:3b-instruct || true
 
 # Restart app to pick up OLLAMA_MODEL env changes
 echo "Restarting app to pick up model selection..."

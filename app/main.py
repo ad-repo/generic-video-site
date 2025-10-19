@@ -569,12 +569,13 @@ async def index():
 	return HTMLResponse(index_file.read_text(encoding="utf-8"))
 
 # ===================== AI SUMMARY API =====================
-from .ai_summary.coordinator import get_coordinator
+from .ai_summary import coordinator as coord_mod
 
 
 class StartSummaryRequest(BaseModel):
     video_path: str
     force: bool = False
+    model_name: Optional[str] = None
 
 
 @app.post("/api/summary/start")
@@ -583,8 +584,8 @@ async def start_summary(req: StartSummaryRequest):
     full_path = str((Path(VIDEOS_ROOT) / req.video_path).resolve())
     if not Path(full_path).exists():
         raise HTTPException(status_code=404, detail="Video not found")
-    coord = get_coordinator()
-    result = coord.start_video_summary(full_path, user_id=None, force=req.force)
+    coord = coord_mod.get_coordinator()
+    result = coord.start_video_summary(full_path, user_id=None, force=req.force, model_name=req.model_name)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to start summary"))
     return result
@@ -593,7 +594,7 @@ async def start_summary(req: StartSummaryRequest):
 @app.get("/api/summary/status/{task_id}")
 async def summary_status(task_id: str):
     """Check background task status for a summary job."""
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     status = coord.get_summary_status(task_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -604,29 +605,63 @@ async def summary_status(task_id: str):
 async def get_summary(video_path: str):
     """Get existing summary (if completed) for a given video path."""
     full_path = str((Path(VIDEOS_ROOT) / video_path).resolve())
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     data = coord.get_video_summary(full_path)
     if not data:
         return {"found": False}
     return {"found": True, **data}
 
+
+@app.get("/api/summary/active")
+async def get_active_summary_task(video_path: str):
+    """Return an active task_id for this video if one exists (pending/processing)."""
+    full_path = str((Path(VIDEOS_ROOT) / video_path).resolve())
+    coord = coord_mod.get_coordinator()
+    tid = coord.find_active_task_for_video(full_path)
+    return {"active": bool(tid), "task_id": tid}
+
+
+@app.get("/api/summary/versions")
+async def list_summary_versions(video_path: str):
+    """List available versions for a video's summary (most recent first)."""
+    full_path = str((Path(VIDEOS_ROOT) / video_path).resolve())
+    coord = coord_mod.get_coordinator()
+    data = coord.get_video_summary(full_path)
+    if not data:
+        return {"found": False, "versions": []}
+    return {"found": True, "versions": data.get("versions", [])}
+
+
+@app.get("/api/summary/version")
+async def get_summary_version(video_path: str, version: int):
+    """Get a specific version of a video's summary."""
+    full_path = str((Path(VIDEOS_ROOT) / video_path).resolve())
+    coord = coord_mod.get_coordinator()
+    data = coord.get_video_summary_version(full_path, int(version))
+    if not data:
+        raise HTTPException(status_code=404, detail="Summary version not found")
+    return data
+
 # ---------------- Legacy-compatible AI summary routes for tests ----------------
 @app.post("/api/generate-summary")
 async def legacy_generate_summary(req: StartSummaryRequest):
     """Compatibility: start summary using legacy path used by tests."""
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     if coord is None:
         raise HTTPException(status_code=503, detail="AI services unavailable")
     full_path = str((Path(VIDEOS_ROOT) / req.video_path).resolve())
     result = coord.start_video_summary(full_path, force=req.force)
     if not result.get("success"):
-        # Map to 400 for validation/data errors
+        # If duplicate/exists, return 200 with payload (tests expect this behavior)
+        if result.get("existing_summary"):
+            return result
+        # Otherwise bad request
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to start summary"))
     return result
 
 @app.get("/api/summary-status/{task_id}")
 async def legacy_summary_status(task_id: str):
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     status = coord.get_summary_status(task_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -634,7 +669,7 @@ async def legacy_summary_status(task_id: str):
 
 @app.get("/api/video-summary/{path:path}")
 async def legacy_get_video_summary(path: str):
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     full_path = str((Path(VIDEOS_ROOT) / path).resolve())
     data = coord.get_video_summary(full_path)
     if not data:
@@ -643,27 +678,51 @@ async def legacy_get_video_summary(path: str):
 
 @app.get("/api/video-summaries")
 async def legacy_list_video_summaries():
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     return coord.list_video_summaries()
 
 @app.delete("/api/delete-summary/{path:path}")
 async def legacy_delete_summary(path: str):
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     full_path = str((Path(VIDEOS_ROOT) / path).resolve())
-    return coord.delete_video_summary(full_path)
+    result = coord.delete_video_summary(full_path)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Summary not found"))
+    return result
 
 @app.get("/api/summary-statistics")
 async def legacy_summary_statistics():
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     return coord.get_summary_statistics()
 
 @app.get("/api/ai-health")
 async def ai_health():
-    coord = get_coordinator()
+    coord = coord_mod.get_coordinator()
     try:
         if not coord:
-            return {"healthy": False, "models_available": [], "model_ready": False}
+            return {"healthy": False, "models_available": [], "model_ready": False, "overall_status": "unavailable"}
         health = coord.summarization_service.check_ollama_health()
+        health["current_model"] = coord.summarization_service.model_name
+        health["overall_status"] = "available" if health.get("healthy") else "unavailable"
         return health
     except Exception:
-        return {"healthy": False, "models_available": [], "model_ready": False}
+        return {"healthy": False, "models_available": [], "model_ready": False, "overall_status": "unavailable"}
+
+
+class PullModelRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/ai-model/pull")
+async def pull_ai_model(req: PullModelRequest):
+    """Pull an Ollama model by name (idempotent)."""
+    coord = coord_mod.get_coordinator()
+    try:
+        result = coord.summarization_service.pull_model(req.name)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to pull model"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

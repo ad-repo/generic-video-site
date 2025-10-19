@@ -526,8 +526,13 @@ video { width: 100%; height: auto; background: black; border-radius: 8px; }
 .summarize-btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
 .summarize-btn.processing { background: linear-gradient(135deg, #512da8, #283593); cursor: default; opacity: 0.85; }
 .summary-status { font-size: 12px; color: var(--muted); }
+.summary-version-select { background: #161a22; color: var(--fg); border: 1px solid #222733; padding: 6px 8px; border-radius: 6px; font-size: 12px; max-width: 45vw; }
 .summary-content { margin-top: 8px; max-height: 40vh; overflow: auto; padding-right: 6px; line-height: 1.6; }
 .summary-section-title { font-weight: 800; font-size: 14px; padding: 6px 10px; background: rgba(156,39,176,0.1); border-radius: 8px; margin: 12px 0 8px 0; }
+.chapters-list{ list-style: none; padding-left: 0; margin: 6px 0 10px; }
+.chapter-item{ margin: 4px 0; }
+.chapter-item .jump-link{ text-decoration: none; background: rgba(33,150,243,0.08); border: 1px solid rgba(33,150,243,0.25); padding: 4px 8px; border-radius: 8px; color: var(--fg); }
+.chapter-item .jump-link:hover{ background: rgba(33,150,243,0.15); }
 .key-points-list { list-style: none; padding-left: 0; margin: 8px 0; display: grid; gap: 6px; }
 .key-points-list .key-point { margin: 0; padding: 8px 0; background: transparent; border: none; display: flex; align-items: flex-start; }
 .key-points-list .key-point::before { content: none; }

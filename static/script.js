@@ -10,6 +10,8 @@
 	const summarySection = document.getElementById('summarySection');
 	const summaryStatus = document.getElementById('summaryStatus');
 	const summaryContent = document.getElementById('summaryContent');
+	const summaryVersionSelect = document.getElementById('summaryVersionSelect');
+	const modelSelect = document.getElementById('modelSelect');
 	const modalPlayBtn = document.getElementById('modalPlayBtn');
 	const modalVideoRating = document.getElementById('modalVideoRating');
 	const courseSidebar = document.getElementById('courseSidebar');
@@ -28,6 +30,8 @@
 	let libraryData = [];
 	let filtered = [];
 	let selectedCourse = null; // Track currently selected/filtered course
+	let currentModalPath = null; // Which video is open in modal
+	let activeSummary = { path: null, taskId: null }; // Track in-progress summary
 	
 	// Debug: Check if elements are found
 	console.log('Course sidebar element:', courseSidebar);
@@ -764,6 +768,8 @@ async function setVideoRating(videoPath, rating){
 		player.innerHTML = '';
 		player.src = `/video/${encodeURIComponent(item.path)}`;
 		playerTitle.textContent = `${item.class} — ${item.title}`;
+		currentModalPath = item.path;
+		activeSummary = { path: null, taskId: null };
 		// subtitles
 		(item.subtitles || []).forEach(sub => {
 			const track = document.createElement('track');
@@ -780,6 +786,7 @@ async function setVideoRating(videoPath, rating){
 		summarySection.classList.add('hidden');
 		summaryStatus.textContent = '';
 		summaryContent.innerHTML = '';
+		if (summaryVersionSelect) { summaryVersionSelect.style.display = 'none'; summaryVersionSelect.innerHTML = ''; }
 
 		// Wire modal play button
 		if (modalPlayBtn) {
@@ -812,6 +819,9 @@ async function setVideoRating(videoPath, rating){
 			});
 		}
 
+		// Populate model select
+		setupModelSelect();
+
 		// Wire summarize button
 		if (summarizeBtn) {
 			summarizeBtn.classList.remove('processing');
@@ -822,6 +832,29 @@ async function setVideoRating(videoPath, rating){
 		// Auto-load existing summary if present
 		(async () => {
 			try {
+				// Populate versions immediately if any exist, regardless of summary status
+				try {
+					const vs0 = await fetch(`/api/summary/versions?video_path=${encodeURIComponent(item.path)}`);
+					if (vs0.ok) {
+						const v0 = await vs0.json();
+						if (v0.found && Array.isArray(v0.versions) && v0.versions.length) {
+							populateVersionSelector(item.path, v0.versions);
+						}
+					}
+				} catch(_) {}
+				// If an active task exists for this video, resume polling immediately
+				const active = await fetch(`/api/summary/active?video_path=${encodeURIComponent(item.path)}`);
+				if (active.ok) {
+					const a = await active.json();
+					if (a.active && a.task_id) {
+						summarySection.classList.remove('hidden');
+						summarizeBtn.classList.add('processing');
+						summarizeBtn.textContent = '⏳ Summarizing...';
+						summaryStatus.textContent = 'Resuming...';
+						activeSummary = { path: item.path, taskId: a.task_id };
+						pollSummaryStatus(a.task_id, item.path);
+					}
+				}
 				const existing = await fetch(`/api/summary/get?video_path=${encodeURIComponent(item.path)}`);
 				if (existing.ok) {
 					const data = await existing.json();
@@ -830,6 +863,10 @@ async function setVideoRating(videoPath, rating){
 						renderSummary(data.summary);
 						summaryStatus.textContent = 'Summary ready';
 						if (summarizeBtn) summarizeBtn.textContent = '🔄 Re-summarize';
+						// If backend included versions, populate (may already be populated, idempotent)
+						if (Array.isArray(data.versions) && data.versions.length) {
+							populateVersionSelector(item.path, data.versions);
+						}
 					}
 				}
 			} catch (_) {}
@@ -866,6 +903,12 @@ async function setVideoRating(videoPath, rating){
 			player.removeEventListener('ended', onEnded);
 			player.pause();
 			player.src = '';
+			currentModalPath = null;
+			activeSummary = { path: null, taskId: null };
+			if (summarizeBtn) {
+				summarizeBtn.classList.remove('processing');
+				summarizeBtn.textContent = '✨ Generate Summary';
+			}
 		};
 		closeModal.onclick = () => { cleanup(); modal.classList.add('hidden'); };
 		modal.onclick = (e) => { if (e.target === modal) { cleanup(); modal.classList.add('hidden'); } };
@@ -895,15 +938,16 @@ async function setVideoRating(videoPath, rating){
 			const res = await fetch('/api/summary/start', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ video_path: item.path, force: true })
+				body: JSON.stringify({ video_path: item.path, force: true, model_name: getSelectedModel() })
 			});
 			if (!res.ok) {
 				const err = await res.text();
 				throw new Error(err || 'Failed to start summary');
 			}
 			const { task_id } = await res.json();
+			activeSummary = { path: item.path, taskId: task_id };
 			summaryStatus.textContent = 'Queued...';
-			await pollSummaryStatus(task_id, item);
+			await pollSummaryStatus(task_id, item.path);
 		} catch (e) {
 			summaryStatus.textContent = 'Error: ' + (e.message || 'Failed');
 			summarizeBtn.classList.remove('processing');
@@ -911,10 +955,13 @@ async function setVideoRating(videoPath, rating){
 		}
 	}
 
-	async function pollSummaryStatus(taskId, item){
+	async function pollSummaryStatus(taskId, itemPath){
 		let done = false;
 		while (!done) {
 			await new Promise(r => setTimeout(r, 1500));
+			// Stop if modal closed or another summary superseded this one
+			if (modal.classList.contains('hidden')) break;
+			if (activeSummary.taskId !== taskId || activeSummary.path !== itemPath) break;
 			const r = await fetch(`/api/summary/status/${encodeURIComponent(taskId)}`);
 			if (!r.ok) break;
 			const s = await r.json();
@@ -927,15 +974,25 @@ async function setVideoRating(videoPath, rating){
 				const result = s.result || {};
 				if (result.success && result.summary) {
 					renderSummary(result.summary);
+					// refresh versions list after new completion
+					try {
+						const vs = await fetch(`/api/summary/versions?video_path=${encodeURIComponent(itemPath)}`);
+						if (vs.ok) {
+							const data = await vs.json();
+							if (data.found) populateVersionSelector(itemPath, data.versions);
+						}
+					} catch(_) {}
 				}
 				summarizeBtn.classList.remove('processing');
 				summarizeBtn.textContent = '🔄 Re-summarize';
+				activeSummary = { path: itemPath, taskId: null };
 			}
 			if (s.status === 'failed') {
 				done = true;
 				summaryStatus.textContent = 'Failed: ' + (s.error || 'Unknown error');
 				summarizeBtn.classList.remove('processing');
 				summarizeBtn.textContent = '✨ AI Summary';
+				activeSummary = { path: itemPath, taskId: null };
 			}
 		}
 	}
@@ -944,6 +1001,7 @@ async function setVideoRating(videoPath, rating){
 		// Parse content into sections
 		const html = formatSummaryContent(raw);
 		summaryContent.innerHTML = html;
+		attachJumpDelegation();
 	}
 
 	function formatSummaryContent(raw){
@@ -965,34 +1023,90 @@ async function setVideoRating(videoPath, rating){
 		const keyPoints = [];
 		const detailSections = [];
 		let currentSection = null;
+		const chapters = [];
+		const seenChapterSeconds = new Set();
 
 		const canonize = (s) => s.replace(/\*/g, '').replace(/\s*:+\s*$/, '').trim().toUpperCase();
 		const isMainKeyHeader = (s) => canonize(s) === 'KEY POINTS';
 		const isMainDetailHeader = (s) => canonize(s) === 'DETAILED SUMMARY';
+		const knownHeadsRe = /^(key concepts|tools|prerequisites|practical applications|real[- ]world use cases|step[- ]by[- ]step|introduction|overview|key features|features)$/i;
 		const isSubHeader = (s) => {
 			const plain = s.replace(/^\*+|\*+$/g, '').trim();
-			return /^[A-Z0-9 ,()'\-\/]+:?$/.test(plain) && /[A-Z]/.test(plain) && plain.length <= 160 && plain.endsWith(':');
+			const endsColon = /:$/.test(plain);
+			const words = plain.replace(/:$/, '').trim();
+			if (endsColon) return words.length > 0 && words.length <= 200;
+			return knownHeadsRe.test(words);
 		};
 
 		for (let rawLine of lines) {
 			let line = rawLine.replace(/^(?:[•\-–—]|➜)\s*/, '').replace(/^["“”]+/, '').trim();
+			if (!line) continue;
+			// Detect chapter lines like: 01:23 - Title or [1:02:03] Title
+			const chap = line.match(/^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[-–—:]?\s*(.+)$/);
+			if (chap) {
+				const seconds = timestampToSeconds(chap[1]);
+				if (!isNaN(seconds) && !seenChapterSeconds.has(seconds)) {
+					chapters.push({ ts: chap[1], seconds, title: chap[2] });
+					seenChapterSeconds.add(seconds);
+					continue;
+				}
+			}
+			// Also collect inline timestamps anywhere in the line
+			let m;
+			const re = /\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?/g;
+			if ((m = re.exec(line))) {
+				const ts = m[1];
+				const seconds = timestampToSeconds(ts);
+				if (!isNaN(seconds) && !seenChapterSeconds.has(seconds)) {
+					const after = line.slice(m.index + m[0].length).replace(/^\s*[-–—:]?\s*/, '').trim();
+					const before = line.slice(0, m.index).trim();
+					const title = (after || before || 'Jump').trim();
+					chapters.push({ ts, seconds, title });
+					seenChapterSeconds.add(seconds);
+				}
+			}
 			if (isMainKeyHeader(line)) { inKeys = true; inDetails = false; continue; }
 			if (isMainDetailHeader(line)) { inKeys = false; inDetails = true; if (!currentSection) currentSection = { title: 'Overview', points: [], steps: [] }; continue; }
-			if (inDetails && isSubHeader(line)) {
+			// Normalize known headers without colon
+			if (!/:$/.test(line) && isSubHeader(line) && !knownHeadsRe.test('')) {
+				line = line + ':';
+			}
+			// Handle header + inline content on same line, including stray ** around colon
+			let split = line.match(/^\*{0,2}([^*].*?)\*{0,2}:\*{0,2}\s+(.+)$/);
+			if (!split) {
+				const h2 = line.match(/^(.+?):\s+(.+)$/);
+				if (h2 && isSubHeader(h2[1] + ':')) {
+					split = ['', h2[1], h2[2]];
+				}
+			}
+			if (split) {
+				if (!inDetails) inDetails = true;
 				if (currentSection && (currentSection.points.length || currentSection.steps.length)) detailSections.push(currentSection);
-				const title = line.replace(/^\*+|\*+$/g, '').replace(/:$/, '').trim();
+				const title = split[1].replace(/^\*+|\*+$/g, '').trim();
+				currentSection = { title, points: [], steps: [] };
+				const rest = split[2].trim();
+				if (rest) currentSection.points.push(rest.replace(/\*\*:/g, ':').replace(/:\*\*/g, ':').replace(/\*\*$/,''));
+				continue;
+			}
+			if (isSubHeader(line)) {
+				if (!inDetails) { inDetails = true; }
+				if (currentSection && (currentSection.points.length || currentSection.steps.length)) detailSections.push(currentSection);
+				const title = line.replace(/^\*+|\*+$/g, '').replace(/:$/, '').replace(/:?\*+\s*$/,'').trim();
 				currentSection = { title, points: [], steps: [] };
 				continue;
 			}
 			if (inKeys) {
-				if (line) keyPoints.push(line);
+				if (line) keyPoints.push(line.replace(/\*\*:/g, ':').replace(/:\*\*/g, ':').replace(/\*\*$/,''));
 				continue;
 			}
 			if (inDetails) {
 				if (!currentSection) currentSection = { title: 'Overview', points: [], steps: [] };
 				const m = line.match(/^(\d+)[\)\.]+\s*(.*)$/);
 				if (m) currentSection.steps.push({ n: parseInt(m[1],10), text: m[2] || '' });
-				else if (line) currentSection.points.push(line);
+				else if (line) {
+					const cleaned = line.replace(/\*\*:/g, ':').replace(/:\*\*/g, ':').replace(/\*\*$/,'');
+					if (cleaned) currentSection.points.push(cleaned);
+				}
 			}
 		}
 		if (currentSection && (currentSection.points.length || currentSection.steps.length)) detailSections.push(currentSection);
@@ -1000,6 +1114,10 @@ async function setVideoRating(videoPath, rating){
 		if (keyPoints.length) {
 			html += '<div class="summary-section-title">✨ KEY POINTS</div>';
 			html += '<ul class="key-points-list">' + keyPoints.map(p => `<li class="key-point">✨ ${renderInline(p)}</li>`).join('') + '</ul>';
+		}
+		if (chapters.length) {
+			html += '<div class="summary-section-title">⏱️ Jump Points</div>';
+			html += '<ul class="chapters-list">' + chapters.map(c => `<li class="chapter-item"><a href="#" class="jump-link" data-seconds="${c.seconds}">⏩ ${escapeHtml(c.ts)} — ${renderInline(c.title)}</a></li>`).join('') + '</ul>';
 		}
 		if (detailSections.length) {
 			html += '<div class="summary-section-title">🧩 DETAILED SUMMARY</div>';
@@ -1044,7 +1162,8 @@ async function setVideoRating(videoPath, rating){
 			'TOOLS, FRAMEWORKS, OR TECHNOLOGIES REFERENCED',
 			'PREREQUISITES OR BACKGROUND KNOWLEDGE DISCUSSED',
 			'PRACTICAL APPLICATIONS AND REAL-WORLD USE CASES',
-			'STEP-BY-STEP PROCESSES OR WORKFLOWS MENTIONED'
+			'STEP-BY-STEP PROCESSES OR WORKFLOWS MENTIONED',
+			'INTRODUCTION', 'OVERVIEW', 'KEY FEATURES', 'FEATURES'
 		];
 		subs.forEach(s => {
 			const re = new RegExp(`(?:^|\\n)\\s*(?:[•\\-–—]\\s*)?\\*{0,2}\\s*${s.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&')}\\s*\\*{0,2}:?\\s*(?:\\*{0,2}\\s*)?`, 'gi');
@@ -1065,7 +1184,13 @@ async function setVideoRating(videoPath, rating){
 	function renderInline(text){
 		// Escape HTML, then convert **bold** to <strong>
 		const escaped = escapeHtml(text);
-		return escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+		const withBold = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+		// Linkify timestamps like 0:42, 01:23, 1:02:03 or [01:23]
+		return withBold.replace(/\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?/g, (m, ts) => {
+			const secs = timestampToSeconds(ts);
+			if (isNaN(secs)) return m;
+			return `<a href="#" class="jump-link" data-seconds="${secs}">⏩ ${ts}</a>`;
+		});
 	}
 
 	function formatSubsectionTitle(title){
@@ -1076,6 +1201,135 @@ async function setVideoRating(videoPath, rating){
 		if (t.startsWith('PRACTICAL APPLICATIONS')) return `🚀 ${escapeHtml(title)}`;
 		if (t.startsWith('STEP-BY-STEP')) return `🧭 ${escapeHtml(title)}`;
 		return `📌 ${escapeHtml(title)}`;
+	}
+
+	function timestampToSeconds(ts){
+		const parts = ts.split(':').map(Number);
+		if (parts.length === 2) return parts[0]*60 + parts[1];
+		if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+		return NaN;
+	}
+
+	function attachJumpDelegation(){
+		if (!summaryContent || summaryContent._jumpHandlerAttached) return;
+		summaryContent.addEventListener('click', (e) => {
+			const a = e.target.closest && e.target.closest('.jump-link');
+			if (!a) return;
+			e.preventDefault();
+			const seconds = Number(a.dataset.seconds || 'NaN');
+			if (!Number.isNaN(seconds)) {
+				try {
+					player.currentTime = Math.max(0, Math.min(seconds, player.duration || seconds));
+					player.play().catch(()=>{});
+				} catch(_) {}
+			}
+		});
+		summaryContent._jumpHandlerAttached = true;
+	}
+
+	function populateVersionSelector(videoPath, versions){
+		if (!summaryVersionSelect) return;
+		const vs = Array.isArray(versions) ? versions.slice() : [];
+		if (vs.length === 0) { summaryVersionSelect.style.display = 'none'; return; }
+		summaryVersionSelect.innerHTML = '';
+		vs.forEach(v => {
+			const opt = document.createElement('option');
+			opt.value = String(v.version);
+			const when = v.generated_at ? formatDateEST(v.generated_at) : '';
+			opt.textContent = `v${v.version} • ${v.model_used || ''} • ${when}`.trim();
+			summaryVersionSelect.appendChild(opt);
+		});
+		summaryVersionSelect.style.display = '';
+		// Load latest (first in list) by default
+		summaryVersionSelect.selectedIndex = 0;
+		if (!summaryVersionSelect._bound) {
+			summaryVersionSelect.addEventListener('change', async () => {
+				const ver = parseInt(summaryVersionSelect.value, 10);
+				if (!Number.isFinite(ver)) return;
+				try {
+					summaryStatus.textContent = `Loading v${ver}...`;
+					const r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(videoPath)}&version=${ver}`);
+					if (r.ok) {
+						const data = await r.json();
+						renderSummary(data.summary || '');
+						summaryStatus.textContent = `Showing v${ver}`;
+					} else {
+						summaryStatus.textContent = `Failed to load v${ver}`;
+					}
+				} catch(_) {
+					summaryStatus.textContent = `Failed to load v${ver}`;
+				}
+			});
+			summaryVersionSelect._bound = true;
+		}
+	}
+
+	function setupModelSelect(){
+		if (!modelSelect) return;
+		modelSelect.style.display = 'none';
+		modelSelect.innerHTML = '';
+		fetch('/api/ai-health').then(r => r.json()).then(data => {
+			const models = Array.isArray(data.models_available) ? data.models_available : [];
+			const current = data.current_model || '';
+			if (models.length === 0) return;
+			models.forEach(name => {
+				const opt = document.createElement('option');
+				opt.value = name;
+				opt.textContent = name;
+				if (name === (window.storageManager.getItem('preferredModel') || current)) opt.selected = true;
+				modelSelect.appendChild(opt);
+			});
+			// Add "Pull more" option group
+			const smallGood = [
+				'llama3.2:1b', 'llama3.2:3b', 'qwen2.5:3b-instruct', 'phi3:mini', 'gemma2:2b',
+				'mistral:7b-instruct', 'qwen2.5:7b-instruct', 'llama3.1:8b-instruct'
+			];
+			const group = document.createElement('optgroup');
+			group.label = 'Try pulling:';
+			smallGood.forEach(name => {
+				if (models.includes(name)) return;
+				const opt = document.createElement('option');
+				opt.value = `__pull__:${name}`;
+				opt.textContent = `Pull ${name}`;
+				group.appendChild(opt);
+			});
+			if (group.children.length) modelSelect.appendChild(group);
+			modelSelect.style.display = '';
+			if (!modelSelect._bound) {
+				modelSelect.addEventListener('change', () => {
+					const sel = modelSelect.value;
+					if (sel && sel.startsWith('__pull__:')) {
+						const name = sel.replace('__pull__:', '');
+						summaryStatus.textContent = `Pulling ${name}...`;
+						fetch('/api/ai-model/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+							.then(r => r.json())
+							.then(() => { summaryStatus.textContent = `Pulled ${name}. Refreshing models...`; setupModelSelect(); })
+							.catch(() => { summaryStatus.textContent = `Failed to pull ${name}`; });
+						return;
+					}
+					if (sel) window.storageManager.setItem('preferredModel', sel);
+				});
+				modelSelect._bound = true;
+			}
+		}).catch(()=>{});
+	}
+
+	function getSelectedModel(){
+		const stored = window.storageManager.getItem('preferredModel');
+		if (stored) return stored;
+		return modelSelect && modelSelect.value ? modelSelect.value : undefined;
+	}
+
+	function formatDateEST(iso){
+		try{
+			const d = new Date(iso);
+			return new Intl.DateTimeFormat('en-US', {
+				timeZone: 'America/New_York',
+				year: 'numeric', month: 'short', day: '2-digit',
+				hour: '2-digit', minute: '2-digit', hour12: true,
+				timeZoneName: 'short'
+			}).format(d);
+		}catch{ return iso; }
 	}
 
 	// keyboard shortcuts
