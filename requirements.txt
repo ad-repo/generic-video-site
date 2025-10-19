@@ -6,7 +6,7 @@ alembic==1.13.1
 requests==2.32.4
 openai-whisper==20231117
 numpy==1.26.4
-torch==2.6.0
+torch==2.3.1
 
 # Testing dependencies
 pytest==8.2.2
