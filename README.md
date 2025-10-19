@@ -12,6 +12,10 @@ A modern, responsive video streaming application built with FastAPI, featuring c
 - **🔄 Cross-Device Sync**: Sync ratings, progress, and watched status across all your devices
 
 ### 🚀 Advanced Features
+- **✨ AI Summaries**: Generate rich, structured summaries for any video (KEY POINTS and DETAILED SUMMARY)
+- **⏱️ Jump Points**: AI‑curated key moments rendered below the summary; clickable to seek
+- **🧭 Versions**: Summary version history with compact labels (vN • model • mm/dd/yy • Xm)
+- **🤖 Model Selection**: Choose Ollama models in the modal; on‑demand pull with persistent caching
 - **⚡ Real-time Synchronization**: Permanent sync groups that never expire
 - **🎮 Interactive Navigation**: Hamburger menu, course filtering, collapsible sidebar
 - **📁 Resource Integration**: Access PDFs, HTML files, and supplementary materials
@@ -58,7 +62,6 @@ generic-video-site/
 ├── Dockerfile           # Docker image configuration
 ├── docker-compose.yml   # Docker Compose setup
 ├── deploy-with-cache-clear.sh # Deployment script
-├── run_tests.py        # Comprehensive test runner
 ├── requirements.txt    # Python dependencies
 └── README.md          # This file
 ```
@@ -134,18 +137,25 @@ data/
 
 ### Run Complete Test Suite
 ```bash
-# Run all tests with coverage report
-python run_tests.py
+# Run all tests with coverage (fast in-memory DB and mocks)
+pytest -q --cov=app --cov-report=term-missing
 
 # Or run specific test categories
-pytest tests/test_database.py -v        # Database tests
-pytest tests/test_sync_system.py -v     # Sync functionality  
-pytest tests/test_api_endpoints.py -v   # API tests
-pytest tests/test_integration.py -v     # End-to-end tests
+pytest tests/test_database.py -q        # Database tests
+pytest tests/test_sync_system.py -q     # Sync functionality
+pytest tests/test_api_endpoints.py -q   # API tests
+pytest tests/test_integration.py -q     # End-to-end tests
 
-# Generate coverage report
+# HTML coverage report
 pytest tests/ --cov=app --cov-report=html
-open htmlcov/index.html  # View coverage report
+open htmlcov/index.html
+```
+
+### Linting
+```bash
+# Run Ruff linter
+python -m pip install ruff
+ruff check .
 ```
 
 ### Test Coverage
@@ -155,6 +165,8 @@ Our comprehensive test suite includes:
 - **✅ Integration Tests** (Full user workflows)
 - **✅ Cross-Device Sync Tests** (Multi-device scenarios)
 - **✅ Fire Rating System Tests** (Rating workflows and persistence)
+
+Note: CI is optimized for speed. Tests run against a fast in‑memory SQLite database with AI services mocked, typically completing in under ~2 minutes on GitHub Actions.
 
 ## 🔄 Cross-Device Synchronization Guide
 
@@ -211,17 +223,27 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ### API Endpoints
 The application provides these key endpoints:
 
-- `GET /` - Main application interface
-- `GET /api/library` - Video library with course structure
-- `GET /api/preferences` - User preferences (ratings, progress, played status)
-- `POST /api/preferences` - Save user preferences
-- `POST /api/sync/create` - Create sync group
-- `POST /api/sync/join` - Join sync group  
-- `GET /api/sync/status` - Check sync status
-- `POST /api/sync/leave` - Leave sync group
-- `POST /api/reset` - Reset all user data
-- `GET /videos/{path}` - Stream video files
-- `GET /health` - Health check
+- `GET /` — Main application interface
+- `GET /api/library` — Video library with course structure
+- `GET /api/preferences` — User preferences (ratings, progress, played status)
+- `POST /api/preferences` — Save user preferences
+- `POST /api/sync/create` — Create sync group
+- `POST /api/sync/join` — Join sync group  
+- `GET /api/sync/status` — Check sync status
+- `POST /api/sync/leave` — Leave sync group
+- `POST /api/reset` — Reset all user data
+- `GET /video/{path}` — Stream video files (range requests supported)
+- `GET /health` — App health check
+
+#### AI Summary API
+- `POST /api/summary/start` — Start generating a summary for a video (supports `force` and `model_name`)
+- `GET /api/summary/status/{task_id}` — Check background task status
+- `GET /api/summary/get?video_path=...` — Retrieve the latest completed summary
+- `GET /api/summary/active?video_path=...` — Detect an in‑progress job for the video (resume polling)
+- `GET /api/summary/versions?video_path=...` — List summary versions
+- `GET /api/summary/version?video_path=...&version=N` — Get a specific version
+- `POST /api/ai-model/pull` — On‑demand pull an Ollama model `{ name: "qwen2.5:14b-instruct" }`
+- `GET /api/ai-health` — Ollama health and installed models
 
 ## 🐳 Docker Configuration
 
@@ -244,6 +266,7 @@ services:
     environment:
       - VIDEO_BASE_DIR=/app/data
       - DATABASE_URL=sqlite:///./db/user_preferences.db
+      - OLLAMA_URL=http://ollama:11434
     user: "0:0"  # Run as root for SQLite permissions
 ```
 
@@ -260,6 +283,11 @@ docker rmi nas3/generic-video-site:local 2>/dev/null || true
 docker-compose build --no-cache
 docker-compose up -d
 ```
+
+### Ollama Models (Persistence and Pulls)
+- Models are stored in a persistent volume (`ollama_models`) and survive redeploys.
+- The model dropdown shows locally installed models (via `/api/ai-health`).
+- Selecting a “Pull …” option triggers `/api/ai-model/pull`; once downloaded it becomes selectable.
 
 ### Health Monitoring
 ```bash
@@ -356,7 +384,7 @@ Device A ←→ [FastAPI Server + SQLite] ←→ Device B
 1. Fork the repository
 2. Create feature branch (`git checkout -b feature/amazing-feature`)
 3. Write tests for new functionality
-4. Ensure all tests pass (`python run_tests.py`)
+4. Ensure all tests pass (`pytest -q`)
 5. Commit changes (`git commit -m 'Add amazing feature'`)
 6. Push to branch (`git push origin feature/amazing-feature`)
 7. Open Pull Request

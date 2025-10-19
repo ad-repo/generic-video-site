@@ -11,6 +11,8 @@ services:
     environment:
       - VIDEO_BASE_DIR=/app/data
       - DATABASE_URL=sqlite:///./db/user_preferences.db
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.1:8b
     restart: unless-stopped
     volumes:
       - ./data:/app/data:ro
@@ -23,3 +25,20 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  ollama_models:

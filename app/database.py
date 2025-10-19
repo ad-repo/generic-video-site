@@ -1,6 +1,6 @@
 import os
 import hashlib
-from sqlalchemy import create_engine, Column, String, Float, DateTime, Text, Integer, ForeignKey, text
+from sqlalchemy import create_engine, Column, String, Float, DateTime, Text, Integer, ForeignKey, text, UniqueConstraint, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -32,6 +32,42 @@ class UserPreference(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class VideoSummary(Base):
+    __tablename__ = "video_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    video_path = Column(Text, nullable=False, index=True)
+    status = Column(String, default="pending", index=True)  # pending | processing | completed | failed | no_audio
+    summary = Column(Text)
+    transcript = Column(Text)
+    model_used = Column(String, default="whisper-base+llama3.2:7b")
+    audio_duration_seconds = Column(Float)
+    processing_time_seconds = Column(Float)
+    error_message = Column(Text)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('video_path', name='uq_video_summaries_video_path'),
+        Index('ix_video_summaries_status_generated', 'status', 'generated_at'),
+    )
+
+class VideoSummaryVersion(Base):
+    __tablename__ = "video_summary_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    video_path = Column(Text, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    summary = Column(Text)
+    transcript = Column(Text)
+    model_used = Column(String)
+    processing_time_seconds = Column(Float)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('video_path', 'version', name='uq_video_summary_versions_path_ver'),
+        Index('ix_video_summary_versions_path_time', 'video_path', 'generated_at'),
+    )
+
 def create_tables():
     """Create all database tables"""
     try:
@@ -47,6 +83,16 @@ def create_tables():
             print(f"⚠️ Warning: No write permission to database directory: {db_dir}")
             
         Base.metadata.create_all(bind=engine)
+        # Lightweight SQLite migration: ensure new columns exist
+        try:
+            with engine.connect() as conn:
+                # Add processing_time_seconds to video_summary_versions if missing
+                res = conn.execute(text("PRAGMA table_info('video_summary_versions')")).fetchall()
+                cols = {row[1] for row in res}
+                if 'processing_time_seconds' not in cols:
+                    conn.execute(text("ALTER TABLE video_summary_versions ADD COLUMN processing_time_seconds FLOAT"))
+        except Exception as e:
+            print(f"⚠️ Migration check failed (non-fatal): {e}")
         print(f"Database tables created at: {db_path}")
         
         # Test database connection

@@ -1,0 +1,20 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "I",  # isort
+  "UP", # pyupgrade
+]
+ignore = [
+  "E501", # handled by line-length above
+]
+
+[format]
+quote-style = "preserve"
+indent-style = "space"
+skip-magic-trailing-comma = true
+line-ending = "auto"
+

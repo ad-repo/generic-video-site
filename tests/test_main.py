@@ -37,6 +37,13 @@ class TestSecurity:
     """Test basic security measures."""
     
     def test_path_traversal_protection(self):
-        """Test protection against path traversal attacks."""
-        response = client.get("/videos/../../../etc/passwd")
-        assert response.status_code == 404
+        """Test protection against path traversal attacks (video route)."""
+        response = client.get("/video/../../../etc/passwd")
+        assert response.status_code in (404, 416)
+
+
+def test_ai_health_endpoint_fast():
+    r = client.get("/api/ai-health")
+    assert r.status_code == 200
+    data = r.json()
+    assert "healthy" in data

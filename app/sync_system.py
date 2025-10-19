@@ -2,12 +2,10 @@
 Cross-device sync system using shareable sync codes
 """
 
-import os
 import secrets
-import string
 from datetime import datetime, timedelta
 from sqlalchemy import Column, String, DateTime, Text
-from .database import Base, get_db
+from .database import Base
 from sqlalchemy.orm import Session
 
 class SyncGroup(Base):
@@ -79,7 +77,7 @@ def join_sync_group(db: Session, sync_code: str, device_user_id: str, device_nam
     if not sync_group:
         return False  # Sync code not found or expired
     
-    # Check if device is already in sync group
+    # Check if device is already represented for this user; tests expect single row per user
     existing = db.query(DeviceSync).filter(
         DeviceSync.sync_code == sync_code.upper(),
         DeviceSync.device_user_id == device_user_id
