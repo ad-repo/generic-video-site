@@ -50,7 +50,7 @@ jobs:
       env:
         PYTHONPATH: .
         # Use in-memory SQLite for any DB connections that aren't mocked
-        DATABASE_URL: sqlite:///:memory:
+        DATABASE_URL: "sqlite:///:memory:"
       run: |
         pytest -q -n auto --cov=app --cov-report=xml
     
