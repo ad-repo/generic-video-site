@@ -35,14 +35,20 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
-    - name: Run tests
+        pip install pytest pytest-cov pytest-xdist
+    - name: Lint (ruff)
+      continue-on-error: true
       run: |
-        # Run core tests that should always pass (streamlined for speed)
-        pytest tests/test_database.py tests/test_sync_system.py tests/test_main.py tests/test_docker.py -v --cov=app --cov-report=xml
-        
-        # Optional: Run our comprehensive test runner (allows some failures)
-        python run_tests.py || echo "Some integration tests may have failed - this is expected"
+        python -m pip install ruff
+        ruff check . --output-format=github
+    
+    - name: Run tests (parallel, with coverage)
+      env:
+        PYTHONPATH: .
+        # Use in-memory SQLite for any DB connections that aren't mocked
+        DATABASE_URL: sqlite:///:memory:
+      run: |
+        pytest -q -n auto --cov=app --cov-report=xml
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
@@ -10,7 +11,12 @@ from app import database as db_mod
 @pytest.fixture(scope="function", autouse=True)
 def fast_in_memory_db(monkeypatch):
     """Use a fresh in-memory SQLite DB per test to avoid file I/O and state bleed."""
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    # Use a single in-memory SQLite across all connections
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db_mod.Base.metadata.create_all(bind=engine)
 
@@ -21,10 +27,9 @@ def fast_in_memory_db(monkeypatch):
         finally:
             test_db.close()
 
-    # Override engine/session dependency everywhere
+    # Override engine/session used by app.database
     monkeypatch.setattr(db_mod, "engine", engine, raising=True)
     monkeypatch.setattr(db_mod, "SessionLocal", TestingSessionLocal, raising=True)
-    monkeypatch.setattr("app.main.get_db", get_test_db, raising=True)
     yield
 
 
@@ -44,7 +49,7 @@ class FakeCoordinator:
         self._tasks = {}
         self._summaries = {}
 
-    def start_video_summary(self, video_path: str, user_id=None, force=False):
+    def start_video_summary(self, video_path: str, user_id=None, force=False, model_name=None):
         if not video_path:
             return {"success": False, "error": "Invalid video path"}
         if (video_path in self._summaries) and not force:
@@ -76,6 +81,17 @@ class FakeCoordinator:
     def get_summary_statistics(self):
         total = len(self._summaries)
         return {"total_summaries": total, "completed": total, "failed": 0, "processing": 0, "average_processing_time": 0.0, "status_breakdown": {"completed": total}}
+
+    # Versions API (simple 1-version stub)
+    def list_versions_for_video(self, video_path: str):
+        if video_path in self._summaries:
+            return [{"version": 1, "generated_at": "2025-01-01T00:00:00", "model_used": "fake-model", "processing_time_seconds": 12.3}]
+        return []
+
+    def get_video_summary_version(self, video_path: str, version: int):
+        if video_path in self._summaries and version == 1:
+            return {"video_path": video_path, "summary": self._summaries[video_path], "transcript": "", "model_used": "fake-model", "generated_at": "2025-01-01T00:00:00", "version": 1}
+        return None
 
 
 # Use this fixture explicitly in tests that need fast AI; don't autouse so that

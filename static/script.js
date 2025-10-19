@@ -32,6 +32,7 @@
 	let selectedCourse = null; // Track currently selected/filtered course
 	let currentModalPath = null; // Which video is open in modal
 	let activeSummary = { path: null, taskId: null }; // Track in-progress summary
+	let transcriptJPFallback = ''; // Fallback transcript containing [JUMP_POINTS] for current video
 	
 	// Debug: Check if elements are found
 	console.log('Course sidebar element:', courseSidebar);
@@ -787,6 +788,7 @@ async function setVideoRating(videoPath, rating){
 		summaryStatus.textContent = '';
 		summaryContent.innerHTML = '';
 		if (summaryVersionSelect) { summaryVersionSelect.style.display = 'none'; summaryVersionSelect.innerHTML = ''; }
+		transcriptJPFallback = '';
 
 		// Wire modal play button
 		if (modalPlayBtn) {
@@ -837,8 +839,8 @@ async function setVideoRating(videoPath, rating){
 					const vs0 = await fetch(`/api/summary/versions?video_path=${encodeURIComponent(item.path)}`);
 					if (vs0.ok) {
 						const v0 = await vs0.json();
-						if (v0.found && Array.isArray(v0.versions) && v0.versions.length) {
-							populateVersionSelector(item.path, v0.versions);
+					if (v0.found && Array.isArray(v0.versions) && v0.versions.length) {
+						populateVersionSelector(item.path, v0.versions, true);
 						}
 					}
 				} catch(_) {}
@@ -856,12 +858,15 @@ async function setVideoRating(videoPath, rating){
 					}
 				}
 				const existing = await fetch(`/api/summary/get?video_path=${encodeURIComponent(item.path)}`);
-				if (existing.ok) {
-					const data = await existing.json();
-					if (data.found && data.status === 'completed' && data.summary) {
-						summarySection.classList.remove('hidden');
-						renderSummary(data.summary);
-						summaryStatus.textContent = 'Summary ready';
+                if (existing.ok) {
+                    const data = await existing.json();
+                    if (data.found && data.status === 'completed' && data.summary) {
+                        summarySection.classList.remove('hidden');
+						if (data.transcript && data.transcript.includes('[JUMP_POINTS]')) {
+							transcriptJPFallback = data.transcript;
+						}
+						renderSummary(data.summary, data.transcript || transcriptJPFallback || '');
+                        summaryStatus.textContent = 'Summary ready';
 						if (summarizeBtn) summarizeBtn.textContent = '🔄 Re-summarize';
 						// If backend included versions, populate (may already be populated, idempotent)
 						if (Array.isArray(data.versions) && data.versions.length) {
@@ -971,9 +976,18 @@ async function setVideoRating(videoPath, rating){
 			}
 			if (s.status === 'completed') {
 				done = true;
-				const result = s.result || {};
-				if (result.success && result.summary) {
-					renderSummary(result.summary);
+				// Fetch the completed summary (with transcript) to render jump points reliably
+				try {
+					const gr = await fetch(`/api/summary/get?video_path=${encodeURIComponent(itemPath)}`);
+					if (gr.ok) {
+						const gd = await gr.json();
+						if (gd.found && gd.summary) {
+							if (gd.transcript && gd.transcript.includes('[JUMP_POINTS]')) {
+								transcriptJPFallback = gd.transcript;
+							}
+							renderSummary(gd.summary, gd.transcript || transcriptJPFallback || '');
+						}
+					}
 					// refresh versions list after new completion
 					try {
 						const vs = await fetch(`/api/summary/versions?video_path=${encodeURIComponent(itemPath)}`);
@@ -982,7 +996,7 @@ async function setVideoRating(videoPath, rating){
 							if (data.found) populateVersionSelector(itemPath, data.versions);
 						}
 					} catch(_) {}
-				}
+				} catch(_) {}
 				summarizeBtn.classList.remove('processing');
 				summarizeBtn.textContent = '🔄 Re-summarize';
 				activeSummary = { path: itemPath, taskId: null };
@@ -997,14 +1011,48 @@ async function setVideoRating(videoPath, rating){
 		}
 	}
 
-	function renderSummary(raw){
-		// Parse content into sections
-		const html = formatSummaryContent(raw);
-		summaryContent.innerHTML = html;
-		attachJumpDelegation();
-	}
+function renderSummary(raw, transcript){
+    // Parse optional jump points from transcript
+    const jp = transcript ? parseJumpPointsFromTranscript(transcript) : [];
+    const html = formatSummaryContent(raw, jp);
+    summaryContent.innerHTML = html;
+    attachJumpDelegation();
+}
 
-	function formatSummaryContent(raw){
+// Extract jump points appended as a JSON block after a [JUMP_POINTS] marker
+function parseJumpPointsFromTranscript(transcript){
+    try {
+        if (!transcript || typeof transcript !== 'string') return [];
+        const marker = transcript.indexOf('[JUMP_POINTS]');
+        if (marker === -1) return [];
+        // Take substring after marker and trim leading whitespace
+        let tail = transcript.slice(marker + '[JUMP_POINTS]'.length).trim();
+        // Heuristic: JSON array should start at first '[' and end at last ']'
+        const startIdx = tail.indexOf('[');
+        const endIdx = tail.lastIndexOf(']');
+        if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) return [];
+        const jsonStr = tail.slice(startIdx, endIdx + 1);
+        let arr = [];
+        try { arr = JSON.parse(jsonStr); } catch { return [];
+        }
+        if (!Array.isArray(arr)) return [];
+        // Normalize to expected fields
+        const norm = [];
+        for (const item of arr) {
+            if (!item) continue;
+            const seconds = Number(item.seconds ?? item.t ?? item.time ?? NaN);
+            const title = String(item.title ?? item.label ?? '').trim();
+            if (!Number.isFinite(seconds)) continue;
+            const mm = Math.floor(seconds / 60);
+            const ss = Math.floor(seconds % 60);
+            const ts = `${mm}:${String(ss).padStart(2,'0')}`;
+            norm.push({ seconds, ts, title });
+        }
+        return norm;
+    } catch { return []; }
+}
+
+function formatSummaryContent(raw, extraChapters){
 		const normalized = normalizeSummaryText(raw);
 		// Split lines and merge orphan numeric step lines like "1" followed by content
 		const rawLines = normalized.split('\n').map(l => l.trim()).filter(Boolean);
@@ -1023,7 +1071,7 @@ async function setVideoRating(videoPath, rating){
 		const keyPoints = [];
 		const detailSections = [];
 		let currentSection = null;
-		const chapters = [];
+    const chapters = [];
 		const seenChapterSeconds = new Set();
 
 		const canonize = (s) => s.replace(/\*/g, '').replace(/\s*:+\s*$/, '').trim().toUpperCase();
@@ -1051,10 +1099,10 @@ async function setVideoRating(videoPath, rating){
 					continue;
 				}
 			}
-			// Also collect inline timestamps anywhere in the line
+			// Also collect inline timestamps anywhere in the line (multiple per line)
 			let m;
-			const re = /\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?/g;
-			if ((m = re.exec(line))) {
+			const re = /\b(\d{1,2}:\d{2}(?::\d{2})?)\b/g;
+			while ((m = re.exec(line))) {
 				const ts = m[1];
 				const seconds = timestampToSeconds(ts);
 				if (!isNaN(seconds) && !seenChapterSeconds.has(seconds)) {
@@ -1063,6 +1111,20 @@ async function setVideoRating(videoPath, rating){
 					const title = (after || before || 'Jump').trim();
 					chapters.push({ ts, seconds, title });
 					seenChapterSeconds.add(seconds);
+				}
+			}
+			// Flexible formats like 1m23s, 1m 23s, 90s, 4m
+			let m2;
+			const reMs = /\b(?:(\d+)m\s*(\d+)s|(?:(\d+)m)|(\d+)s)\b/gi;
+			while ((m2 = reMs.exec(line))) {
+				const secs = parseFlexibleTimestamp(m2);
+				if (!isNaN(secs) && !seenChapterSeconds.has(secs)) {
+					const after = line.slice(m2.index + m2[0].length).replace(/^\s*[-–—:]?\s*/, '').trim();
+					const before = line.slice(0, m2.index).trim();
+					const label = m2[0].replace(/\s+/g,'');
+					const title = (after || before || 'Jump').trim();
+					chapters.push({ ts: label, seconds: secs, title });
+					seenChapterSeconds.add(secs);
 				}
 			}
 			if (isMainKeyHeader(line)) { inKeys = true; inDetails = false; continue; }
@@ -1115,10 +1177,20 @@ async function setVideoRating(videoPath, rating){
 			html += '<div class="summary-section-title">✨ KEY POINTS</div>';
 			html += '<ul class="key-points-list">' + keyPoints.map(p => `<li class="key-point">✨ ${renderInline(p)}</li>`).join('') + '</ul>';
 		}
-		if (chapters.length) {
-			html += '<div class="summary-section-title">⏱️ Jump Points</div>';
-			html += '<ul class="chapters-list">' + chapters.map(c => `<li class="chapter-item"><a href="#" class="jump-link" data-seconds="${c.seconds}">⏩ ${escapeHtml(c.ts)} — ${renderInline(c.title)}</a></li>`).join('') + '</ul>';
-		}
+    // Merge chapters from transcript if provided
+    if (Array.isArray(extraChapters)) {
+        extraChapters.forEach(c => {
+            if (!c) return;
+            const seconds = Number(c.seconds ?? c.t ?? c.time ?? NaN);
+            const ts = c.ts || (Number.isFinite(seconds) ? `${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}` : '');
+            const title = c.title || c.label || '';
+            if (Number.isFinite(seconds) && !seenChapterSeconds.has(seconds)) {
+                chapters.push({ seconds, ts, title });
+                seenChapterSeconds.add(seconds);
+            }
+        });
+    }
+
 		if (detailSections.length) {
 			html += '<div class="summary-section-title">🧩 DETAILED SUMMARY</div>';
 			detailSections.forEach(sec => {
@@ -1139,6 +1211,11 @@ async function setVideoRating(videoPath, rating){
 			} else {
 				html = `<div class="summary-section-title">SUMMARY</div><div>${renderInline(raw)}</div>`;
 			}
+		}
+		// Append Jump Points at the end (below the summary), if available
+		if (chapters.length) {
+			html += '<div class="summary-section-title">⏱️ Jump Points</div>';
+			html += '<ul class="chapters-list">' + chapters.map(c => `<li class="chapter-item"><a href="#" class="jump-link" data-seconds="${c.seconds}">⏩ ${escapeHtml(c.ts)} — ${renderInline(c.title)}</a></li>`).join('') + '</ul>';
 		}
 		return html;
 	}
@@ -1185,12 +1262,19 @@ async function setVideoRating(videoPath, rating){
 		// Escape HTML, then convert **bold** to <strong>
 		const escaped = escapeHtml(text);
 		const withBold = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-		// Linkify timestamps like 0:42, 01:23, 1:02:03 or [01:23]
-		return withBold.replace(/\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?/g, (m, ts) => {
+		// Linkify timestamps like 0:42, 01:23, 1:02:03
+		let out = withBold.replace(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/g, (m, ts) => {
 			const secs = timestampToSeconds(ts);
 			if (isNaN(secs)) return m;
 			return `<a href="#" class="jump-link" data-seconds="${secs}">⏩ ${ts}</a>`;
 		});
+		// Also linkify 1m23s, 1m 23s, 90s, 4m
+		out = out.replace(/\b(?:(\d+)m\s*(\d+)s|(?:(\d+)m)|(\d+)s)\b/gi, (m, a, b, c, d) => {
+			const secs = parseFlexibleTimestamp([m, a, b, c, d]);
+			if (isNaN(secs)) return m;
+			return `<a href="#" class="jump-link" data-seconds="${secs}">⏩ ${m.replace(/\s+/g,'')}</a>`;
+		});
+		return out;
 	}
 
 	function formatSubsectionTitle(title){
@@ -1207,6 +1291,15 @@ async function setVideoRating(videoPath, rating){
 		const parts = ts.split(':').map(Number);
 		if (parts.length === 2) return parts[0]*60 + parts[1];
 		if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+		return NaN;
+	}
+
+	function parseFlexibleTimestamp(match){
+		// match can be RegExp match array or composed array [full,a,b,c,d]
+		const a = match[1], b = match[2], c = match[3], d = match[4];
+		if (a && b) return Number(a)*60 + Number(b);
+		if (c) return Number(c)*60;
+		if (d) return Number(d);
 		return NaN;
 	}
 
@@ -1227,7 +1320,7 @@ async function setVideoRating(videoPath, rating){
 		summaryContent._jumpHandlerAttached = true;
 	}
 
-	function populateVersionSelector(videoPath, versions){
+function populateVersionSelector(videoPath, versions, autoLoad){
 		if (!summaryVersionSelect) return;
 		const vs = Array.isArray(versions) ? versions.slice() : [];
 		if (vs.length === 0) { summaryVersionSelect.style.display = 'none'; return; }
@@ -1235,8 +1328,18 @@ async function setVideoRating(videoPath, rating){
 		vs.forEach(v => {
 			const opt = document.createElement('option');
 			opt.value = String(v.version);
-			const when = v.generated_at ? formatDateEST(v.generated_at) : '';
-			opt.textContent = `v${v.version} • ${v.model_used || ''} • ${when}`.trim();
+			const when = v.generated_at ? formatDateOnly(v.generated_at) : '';
+			const dur = typeof v.processing_time_seconds === 'number' ? ` • ${formatMinutes(v.processing_time_seconds)}` : '';
+			// Short label: vN • model • mm/dd/yy • Xm
+			let modelShort = '';
+			try {
+				const raw = (v.model_used || v.display_model || '').toString();
+				const mm = raw.match(/[^+]+$/); // take text after last '+'
+				modelShort = (mm ? mm[0] : raw).replace(/-instruct\b/i, '');
+			} catch(_) { modelShort = ''; }
+			opt.textContent = `v${v.version} • ${modelShort || 'model'}${when ? ` • ${when}` : ''}${dur}`.trim();
+			// Mobile label (CSS hides full text and shows data-mobile)
+			opt.setAttribute('data-mobile', `v${v.version}`);
 			summaryVersionSelect.appendChild(opt);
 		});
 		summaryVersionSelect.style.display = '';
@@ -1248,11 +1351,37 @@ async function setVideoRating(videoPath, rating){
 				if (!Number.isFinite(ver)) return;
 				try {
 					summaryStatus.textContent = `Loading v${ver}...`;
-					const r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(videoPath)}&version=${ver}`);
+					let r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(videoPath)}&version=${ver}`);
+					if (!r.ok) {
+						// Fallback: try filename-only in case of path mismatch
+						const base = (videoPath || '').split('/').pop();
+						if (base) {
+							r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(base)}&version=${ver}`);
+						}
+					}
 					if (r.ok) {
 						const data = await r.json();
-						renderSummary(data.summary || '');
-						summaryStatus.textContent = `Showing v${ver}`;
+						summarySection.classList.remove('hidden');
+						if (data.summary && data.summary.trim()) {
+							const tx = (data.transcript && data.transcript.includes('[JUMP_POINTS]')) ? data.transcript : (transcriptJPFallback || '');
+							renderSummary(data.summary, tx);
+							summaryStatus.textContent = `Showing v${ver}`;
+						} else {
+							// Fallback to completed summary
+							const g = await fetch(`/api/summary/get?video_path=${encodeURIComponent(videoPath)}`);
+							if (g.ok) {
+								const gd = await g.json();
+								if (gd.found && gd.summary) {
+									if (gd.transcript && gd.transcript.includes('[JUMP_POINTS]')) {
+										transcriptJPFallback = gd.transcript;
+									}
+									renderSummary(gd.summary, gd.transcript || transcriptJPFallback || '');
+									summaryStatus.textContent = `Showing v${ver}`;
+									return;
+								}
+							}
+							summaryStatus.textContent = `No content for v${ver}`;
+						}
 					} else {
 						summaryStatus.textContent = `Failed to load v${ver}`;
 					}
@@ -1262,9 +1391,74 @@ async function setVideoRating(videoPath, rating){
 			});
 			summaryVersionSelect._bound = true;
 		}
+
+		// Auto-load currently selected version if requested or if nothing is rendered yet
+		if (autoLoad || !summaryContent || summaryContent.innerHTML.trim() === '') {
+			const sel = parseInt(summaryVersionSelect.value, 10);
+			if (Number.isFinite(sel)) {
+				(void (async () => {
+					try {
+						summaryStatus.textContent = `Loading v${sel}...`;
+					let r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(videoPath)}&version=${sel}`);
+						if (!r.ok) {
+							const base = (videoPath || '').split('/').pop();
+							if (base) {
+								r = await fetch(`/api/summary/version?video_path=${encodeURIComponent(base)}&version=${sel}`);
+							}
+						}
+						if (r.ok) {
+							const data = await r.json();
+							summarySection.classList.remove('hidden');
+							if (data.summary && data.summary.trim()) {
+								const tx = (data.transcript && data.transcript.includes('[JUMP_POINTS]')) ? data.transcript : (transcriptJPFallback || '');
+								renderSummary(data.summary, tx);
+								summaryStatus.textContent = `Showing v${sel}`;
+							} else {
+								const g = await fetch(`/api/summary/get?video_path=${encodeURIComponent(videoPath)}`);
+								if (g.ok) {
+									const gd = await g.json();
+									if (gd.found && gd.summary) {
+										if (gd.transcript && gd.transcript.includes('[JUMP_POINTS]')) {
+											transcriptJPFallback = gd.transcript;
+										}
+										renderSummary(gd.summary, gd.transcript || transcriptJPFallback || '');
+										summaryStatus.textContent = `Showing v${sel}`;
+									}
+								}
+							}
+						}
+					} catch(_) {}
+				})());
+			}
+		}
 	}
 
-	function setupModelSelect(){
+	function formatMinutes(seconds){
+		const m = (Number(seconds) || 0) / 60;
+		const str = m.toFixed(1);
+		return `${str}m`;
+	}
+
+	function compactModel(model){
+		try{
+			let m = model;
+			const plus = m.lastIndexOf('+');
+			if (plus !== -1) m = m.slice(plus + 1);
+			m = m.replace(/-instruct\b/i, '');
+			return m;
+		}catch{ return model; }
+	}
+
+	function formatDateOnly(iso){
+		try{
+			const d = new Date(iso);
+			return new Intl.DateTimeFormat('en-US', {
+				month: '2-digit', day: '2-digit', year: '2-digit', timeZone: 'America/New_York'
+			}).format(d);
+		}catch{ return ''; }
+	}
+
+function setupModelSelect(preselectName){
 		if (!modelSelect) return;
 		modelSelect.style.display = 'none';
 		modelSelect.innerHTML = '';
@@ -1272,17 +1466,18 @@ async function setVideoRating(videoPath, rating){
 			const models = Array.isArray(data.models_available) ? data.models_available : [];
 			const current = data.current_model || '';
 			if (models.length === 0) return;
+        const desired = preselectName || window.storageManager.getItem('preferredModel') || current;
 			models.forEach(name => {
 				const opt = document.createElement('option');
 				opt.value = name;
 				opt.textContent = name;
-				if (name === (window.storageManager.getItem('preferredModel') || current)) opt.selected = true;
+				if (name === desired) opt.selected = true;
 				modelSelect.appendChild(opt);
 			});
 			// Add "Pull more" option group
 			const smallGood = [
-				'llama3.2:1b', 'llama3.2:3b', 'qwen2.5:3b-instruct', 'phi3:mini', 'gemma2:2b',
-				'mistral:7b-instruct', 'qwen2.5:7b-instruct', 'llama3.1:8b-instruct'
+				'llama3.2:1b', 'llama3.2:3b', 'llama3.1:8b-instruct', 'qwen2.5:3b-instruct', 'phi3:mini', 'gemma2:2b',
+				'mistral:7b-instruct', 'qwen2.5:7b-instruct', 'qwen2.5:14b-instruct', 'mistral-nemo:12b-instruct'
 			];
 			const group = document.createElement('optgroup');
 			group.label = 'Try pulling:';
@@ -1296,21 +1491,57 @@ async function setVideoRating(videoPath, rating){
 			if (group.children.length) modelSelect.appendChild(group);
 			modelSelect.style.display = '';
 			if (!modelSelect._bound) {
-				modelSelect.addEventListener('change', () => {
+            modelSelect.addEventListener('change', async () => {
 					const sel = modelSelect.value;
 					if (sel && sel.startsWith('__pull__:')) {
 						const name = sel.replace('__pull__:', '');
 						summaryStatus.textContent = `Pulling ${name}...`;
-						fetch('/api/ai-model/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
-							.then(r => r.json())
-							.then(() => { summaryStatus.textContent = `Pulled ${name}. Refreshing models...`; setupModelSelect(); })
-							.catch(() => { summaryStatus.textContent = `Failed to pull ${name}`; });
+                    try {
+                        const pr = await fetch('/api/ai-model/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+                        if (!pr.ok) {
+                            const t = await pr.text();
+                            summaryStatus.textContent = `Failed to pull ${name}: ${t}`;
+                            return;
+                        }
+                        const resp = await pr.json();
+                        summaryStatus.textContent = `${resp.cached ? 'Found cached' : 'Pulled'} ${name}. Refreshing models...`;
+                        modelSelect._retryName = name;
+                        modelSelect._retryCount = 0;
+                        setupModelSelect(name);
+                        window.storageManager.setItem('preferredModel', name);
+                    } catch (e) {
+                        summaryStatus.textContent = `Failed to pull ${name}`;
+                    }
 						return;
 					}
 					if (sel) window.storageManager.setItem('preferredModel', sel);
 				});
 				modelSelect._bound = true;
 			}
+			// If a preselect was requested and exists, persist it now
+			if (desired) {
+				const hasDesired = models.includes(desired);
+				if (hasDesired) {
+					modelSelect.value = desired;
+					window.storageManager.setItem('preferredModel', desired);
+				}
+			}
+
+        // If we just pulled a model and it hasn't registered yet, poll a few times
+        if (preselectName && !models.includes(preselectName)) {
+            modelSelect._retryName = preselectName;
+            modelSelect._retryCount = (modelSelect._retryCount || 0) + 1;
+            if (modelSelect._retryCount <= 60) { // up to ~60s
+                summaryStatus.textContent = `Waiting for ${preselectName} to register... (${modelSelect._retryCount}/10)`;
+                setTimeout(() => setupModelSelect(preselectName), 1000);
+            } else {
+                summaryStatus.textContent = `Model ${preselectName} not listed yet; try again or refresh.`;
+            }
+            return;
+        } else {
+            modelSelect._retryName = null;
+            modelSelect._retryCount = 0;
+        }
 		}).catch(()=>{});
 	}
 

@@ -527,6 +527,13 @@ video { width: 100%; height: auto; background: black; border-radius: 8px; }
 .summarize-btn.processing { background: linear-gradient(135deg, #512da8, #283593); cursor: default; opacity: 0.85; }
 .summary-status { font-size: 12px; color: var(--muted); }
 .summary-version-select { background: #161a22; color: var(--fg); border: 1px solid #222733; padding: 6px 8px; border-radius: 6px; font-size: 12px; max-width: 45vw; }
+@media (max-width: 768px) {
+  .summary-version-select {
+    max-width: 32vw;
+  }
+  /* Hide long option text on mobile and show compact label */
+  .summary-version-select option::before { content: attr(data-mobile); }
+}
 .summary-content { margin-top: 8px; max-height: 40vh; overflow: auto; padding-right: 6px; line-height: 1.6; }
 .summary-section-title { font-weight: 800; font-size: 14px; padding: 6px 10px; background: rgba(156,39,176,0.1); border-radius: 8px; margin: 12px 0 8px 0; }
 .chapters-list{ list-style: none; padding-left: 0; margin: 6px 0 10px; }

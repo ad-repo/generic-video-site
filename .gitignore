@@ -59,6 +59,13 @@ Thumbs.db
 
 # Docker
 .dockerignore
+docker/*
+!docker/*.sh
+
+# Ollama models (persistent volume/bind mount)
+ollama/
+ollama_models/
+**/.ollama/
 
 # Logs
 *.log

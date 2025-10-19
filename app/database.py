@@ -40,7 +40,7 @@ class VideoSummary(Base):
     status = Column(String, default="pending", index=True)  # pending | processing | completed | failed | no_audio
     summary = Column(Text)
     transcript = Column(Text)
-    model_used = Column(String)
+    model_used = Column(String, default="whisper-base+llama3.2:7b")
     audio_duration_seconds = Column(Float)
     processing_time_seconds = Column(Float)
     error_message = Column(Text)
@@ -60,6 +60,7 @@ class VideoSummaryVersion(Base):
     summary = Column(Text)
     transcript = Column(Text)
     model_used = Column(String)
+    processing_time_seconds = Column(Float)
     generated_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -82,6 +83,16 @@ def create_tables():
             print(f"⚠️ Warning: No write permission to database directory: {db_dir}")
             
         Base.metadata.create_all(bind=engine)
+        # Lightweight SQLite migration: ensure new columns exist
+        try:
+            with engine.connect() as conn:
+                # Add processing_time_seconds to video_summary_versions if missing
+                res = conn.execute(text("PRAGMA table_info('video_summary_versions')")).fetchall()
+                cols = {row[1] for row in res}
+                if 'processing_time_seconds' not in cols:
+                    conn.execute(text("ALTER TABLE video_summary_versions ADD COLUMN processing_time_seconds FLOAT"))
+        except Exception as e:
+            print(f"⚠️ Migration check failed (non-fatal): {e}")
         print(f"Database tables created at: {db_path}")
         
         # Test database connection
