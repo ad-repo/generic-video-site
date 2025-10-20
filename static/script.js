@@ -1823,8 +1823,8 @@ function setupModelSelect(preselectName){
 		fetchLibrary();
 		updateSyncStatus();
 		
-		// Update sync status periodically
-		setInterval(updateSyncStatus, 2000);
+		// Update sync status periodically (less frequent to reduce DB load)
+		setInterval(updateSyncStatus, 5000);
 		
 		// Update sync status when online/offline
 		window.addEventListener('online', updateSyncStatus);
